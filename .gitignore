@@ -85,4 +85,3 @@ vector_store/*.faiss
 # Logs
 *.log
 logs/
-*.db-journal
