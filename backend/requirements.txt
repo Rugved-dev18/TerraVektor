@@ -1,8 +1,4 @@
-fastapi
-uvicorn
-pydantic
-pydantic-settings
-sqlalchemy
-aiosqlite
-python-multipart
-numpy
+fastapi>=0.100.0
+uvicorn>=0.22.0
+pydantic>=1.10.0,<3.0.0
+requests>=2.28.0

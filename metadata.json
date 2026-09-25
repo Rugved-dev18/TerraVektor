@@ -1,0 +1,7 @@
+{
+  "name": "TerraVektor - Satellite Change Analysis",
+  "description": "Semantic retrieval and multi-temporal change analysis platform for satellite imagery.",
+  "capabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
