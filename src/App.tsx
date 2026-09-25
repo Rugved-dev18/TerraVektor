@@ -38,7 +38,7 @@ function App() {
   const renderPage = () => {
     switch (currentPage) {
       case 'dashboard':
-        return <Dashboard />;
+        return <Dashboard onNavigate={(page) => setCurrentPage(page as PageType)} />;
       case 'sentinel2-search':
         return <Sentinel2Search />;
       case 'semantic-search':
