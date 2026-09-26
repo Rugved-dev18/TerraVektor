@@ -121,6 +121,7 @@ export interface Sentinel2Product {
   data_mode: 'live_copernicus' | 'cached' | 'demo_fallback';
   thumbnail_url?: string;
   quicklook_url?: string;
+  preview_url?: string;
   download_url: string;
   cdse_browser_url: string;
   origin: string;
@@ -139,5 +140,40 @@ export interface Sentinel2SearchResponse {
   execution_time_ms: number;
   cached_at?: string;
   cache_age_seconds?: number;
+  message?: string;
+}
+
+export interface ChangeAnalysisRequest {
+  before_product_id: string;
+  after_product_id: string;
+  aoi_bbox?: [number, number, number, number]; // minLon, minLat, maxLon, maxLat
+  method?: 'ndvi_differencing';
+}
+
+export interface ChangeAnalysisResult {
+  analysis_id: string;
+  before_product_id: string;
+  after_product_id: string;
+  data_mode: 'real_sentinel2' | 'demo_fallback';
+  processing_method: string;
+  change_percentage: number;
+  before_ndvi_avg: number;
+  after_ndvi_avg: number;
+  change_mask_url: string;
+  before_image_url: string;
+  after_image_url: string;
+  statistics: {
+    total_pixels: number;
+    changed_pixels: number;
+    unchanged_pixels: number;
+  };
+  metadata: {
+    before_date: string;
+    after_date: string;
+    before_cloud_cover: number;
+    after_cloud_cover: number;
+    aoi_bbox: [number, number, number, number] | null;
+    processing_time_ms: number;
+  };
   message?: string;
 }

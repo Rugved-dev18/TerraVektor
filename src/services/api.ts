@@ -111,4 +111,30 @@ export const searchSentinel2 = async (
   return response.data;
 };
 
+// Sentinel-2 Image Preview URL Helper
+export const getSentinel2PreviewUrl = (productId: string): string => {
+  return `${API_BASE_URL}/api/sentinel2/preview/${productId}`;
+};
+
+// Sentinel-2 Change Analysis
+export const analyzeSentinel2Change = async (
+  beforeProductId: string,
+  afterProductId: string,
+  aoiBbox?: [number, number, number, number],
+  method: 'ndvi_differencing' = 'ndvi_differencing'
+): Promise<any> => {
+  const response = await api.post('/api/change/analyze-sentinel2', {
+    before_product_id: beforeProductId,
+    after_product_id: afterProductId,
+    aoi_bbox: aoiBbox,
+    method
+  });
+  return response.data;
+};
+
+// Change Mask URL Helper
+export const getChangeMaskUrl = (analysisId: string): string => {
+  return `${API_BASE_URL}/api/change/mask/${analysisId}`;
+};
+
 export default api;

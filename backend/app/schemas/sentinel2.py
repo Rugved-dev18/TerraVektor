@@ -83,6 +83,8 @@ class Sentinel2Product(BaseModel):
     bbox: List[float]
     center: List[float]
     data_mode: str = "live_copernicus"
+    thumbnail_url: Optional[str] = None
+    preview_url: Optional[str] = None
     download_url: str
     cdse_browser_url: str
     origin: str

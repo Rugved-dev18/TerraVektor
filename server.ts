@@ -2,6 +2,7 @@ import express, { Request, Response } from 'express';
 import cors from 'cors';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { Buffer } from 'buffer';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -499,6 +500,122 @@ async function startServer() {
   const sentinel2Cache = new Map<string, SearchCacheEntry>();
   const CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour TTL
 
+  // CDSE OAuth Token Management
+  interface CDSETokenState {
+    token: string | null;
+    expiresAt: number;
+  }
+  const cdseTokenState: CDSETokenState = {
+    token: process.env.CDSE_ACCESS_TOKEN || null,
+    expiresAt: process.env.CDSE_ACCESS_TOKEN ? Date.now() + 3600000 : 0
+  };
+
+  async function getCDSEAuthHeader(): Promise<string | null> {
+    if (process.env.CDSE_ACCESS_TOKEN) {
+      return `Bearer ${process.env.CDSE_ACCESS_TOKEN}`;
+    }
+    if (cdseTokenState.token && Date.now() < cdseTokenState.expiresAt - 60000) {
+      return `Bearer ${cdseTokenState.token}`;
+    }
+
+    const username = process.env.CDSE_USERNAME;
+    const password = process.env.CDSE_PASSWORD;
+    const clientId = process.env.COPERNICUS_CDSE_CLIENT_ID || 'cdse-public';
+    const clientSecret = process.env.COPERNICUS_CDSE_CLIENT_SECRET;
+
+    if (username && password) {
+      try {
+        const bodyParams = new URLSearchParams({
+          grant_type: 'password',
+          client_id: clientId,
+          username,
+          password
+        });
+        if (clientSecret) {
+          bodyParams.append('client_secret', clientSecret);
+        }
+        const tokenRes = await fetch('https://identity.dataspace.copernicus.eu/auth/realms/CDSE/protocol/openid-connect/token', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: bodyParams.toString()
+        });
+        if (tokenRes.ok) {
+          const tokenData = await tokenRes.json();
+          if (tokenData.access_token) {
+            cdseTokenState.token = tokenData.access_token;
+            cdseTokenState.expiresAt = Date.now() + ((tokenData.expires_in || 600) * 1000);
+            console.log('[CDSE Auth] Acquired fresh bearer token from identity service');
+            return `Bearer ${cdseTokenState.token}`;
+          }
+        }
+      } catch (e: any) {
+        console.warn('[CDSE Auth] Failed connecting to identity service:', e.message);
+      }
+    }
+
+    if (process.env.COPERNICUS_CDSE_CLIENT_ID && process.env.COPERNICUS_CDSE_CLIENT_SECRET && !username) {
+      try {
+        const bodyParams = new URLSearchParams({
+          grant_type: 'client_credentials',
+          client_id: process.env.COPERNICUS_CDSE_CLIENT_ID,
+          client_secret: process.env.COPERNICUS_CDSE_CLIENT_SECRET
+        });
+        const tokenRes = await fetch('https://identity.dataspace.copernicus.eu/auth/realms/CDSE/protocol/openid-connect/token', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: bodyParams.toString()
+        });
+        if (tokenRes.ok) {
+          const tokenData = await tokenRes.json();
+          if (tokenData.access_token) {
+            cdseTokenState.token = tokenData.access_token;
+            cdseTokenState.expiresAt = Date.now() + ((tokenData.expires_in || 600) * 1000);
+            return `Bearer ${cdseTokenState.token}`;
+          }
+        }
+      } catch (e: any) {
+        console.warn('[CDSE Auth] Client credentials error:', e.message);
+      }
+    }
+
+    return null;
+  }
+
+  // Preview Image In-Memory Cache
+  interface PreviewCacheEntry {
+    buffer: Buffer;
+    contentType: string;
+    source: string;
+    timestamp: number;
+  }
+  const previewCache = new Map<string, PreviewCacheEntry>();
+
+  function createDemoFallbackSvg(productId: string): Buffer {
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+      <defs>
+        <radialGradient id="spaceGrad" cx="50%" cy="50%" r="50%">
+          <stop offset="0%" stop-color="#1e293b"/>
+          <stop offset="100%" stop-color="#090d16"/>
+        </radialGradient>
+        <pattern id="grid" width="32" height="32" patternUnits="userSpaceOnUse">
+          <path d="M 32 0 L 0 0 0 32" fill="none" stroke="rgba(56,189,248,0.15)" stroke-width="1"/>
+        </pattern>
+      </defs>
+      <rect width="512" height="512" fill="url(#spaceGrad)"/>
+      <rect width="512" height="512" fill="url(#grid)"/>
+      <path d="M 60 200 Q 140 120 220 220 T 380 240 T 480 180 L 480 480 L 60 480 Z" fill="#14532d" opacity="0.45"/>
+      <path d="M 40 280 Q 180 220 280 320 T 440 310 L 480 360 L 480 480 L 40 480 Z" fill="#047857" opacity="0.5"/>
+      <path d="M 0 340 Q 120 300 240 380 T 480 370 L 480 480 L 0 480 Z" fill="#0284c7" opacity="0.6"/>
+      <path d="M 120 512 C 180 400 160 300 320 220 C 400 180 460 160 512 140" fill="none" stroke="#38bdf8" stroke-width="8" opacity="0.7"/>
+      <rect x="24" y="24" width="464" height="64" rx="8" fill="rgba(15,23,42,0.85)" stroke="#eab308" stroke-width="2"/>
+      <text x="256" y="52" font-family="system-ui, sans-serif" font-size="16" font-weight="bold" fill="#facc15" text-anchor="middle">DEMONSTRATION / FALLBACK SATELLITE SCENE</text>
+      <text x="256" y="74" font-family="monospace" font-size="11" fill="#94a3b8" text-anchor="middle">Product ID: ${productId.slice(0, 32)}</text>
+      <rect x="156" y="440" width="200" height="36" rx="6" fill="rgba(2,132,199,0.9)"/>
+      <text x="256" y="463" font-family="system-ui, sans-serif" font-size="12" font-weight="bold" fill="#ffffff" text-anchor="middle">Copernicus S2 Sim</text>
+    </svg>`;
+    return Buffer.from(svg, 'utf-8');
+  }
+
   function parseWktToGeoJson(wkt: string | undefined): {
     geometry: { type: 'Polygon'; coordinates: number[][][] };
     bbox: [number, number, number, number];
@@ -715,8 +832,9 @@ async function startServer() {
           'User-Agent': 'TerraVektor-Satellite-Discovery/1.0'
         };
 
-        if (process.env.CDSE_ACCESS_TOKEN) {
-          headers['Authorization'] = `Bearer ${process.env.CDSE_ACCESS_TOKEN}`;
+        const authHeader = await getCDSEAuthHeader();
+        if (authHeader) {
+          headers['Authorization'] = authHeader;
         }
 
         const response = await fetch(cdseUrl, {
@@ -798,6 +916,8 @@ async function startServer() {
             bbox: bboxArr,
             center: centerArr,
             data_mode: 'live_copernicus' as const,
+            thumbnail_url: `/api/sentinel2/preview/${item.Id}`,
+            preview_url: `/api/sentinel2/preview/${item.Id}`,
             download_url: `https://catalogue.dataspace.copernicus.eu/odata/v1/Products(${item.Id})/$value`,
             cdse_browser_url: cdseBrowserUrl,
             origin: attrMap.origin || 'ESA',
@@ -891,6 +1011,8 @@ async function startServer() {
           bbox: [minX, minY, maxX, maxY] as [number, number, number, number],
           center: [(minX + maxX) / 2, (minY + maxY) / 2] as [number, number],
           data_mode: 'demo_fallback' as const,
+          thumbnail_url: `/api/sentinel2/preview/${id}`,
+          preview_url: `/api/sentinel2/preview/${id}`,
           download_url: `https://catalogue.dataspace.copernicus.eu/odata/v1/Products(${id})/$value`,
           cdse_browser_url: `https://browser.dataspace.copernicus.eu/?zoom=11&lat=${fallbackCenterLat.toFixed(4)}&lng=${fallbackCenterLon.toFixed(4)}`,
           origin: 'ESA',
@@ -931,6 +1053,408 @@ async function startServer() {
 
   app.post('/api/sentinel2/search', handleSentinel2Search);
   app.get('/api/sentinel2/search', handleSentinel2Search);
+
+  // 8. Sentinel-2 Imagery Preview Handler
+  async function handleSentinel2Preview(req: Request, res: Response) {
+    const { productId } = req.params;
+    if (!productId || typeof productId !== 'string') {
+      return res.status(400).json({ detail: 'Product ID is required' });
+    }
+
+    // A. Check in-memory image cache
+    if (previewCache.has(productId)) {
+      const cached = previewCache.get(productId)!;
+      res.setHeader('Content-Type', cached.contentType);
+      res.setHeader('X-Preview-Source', cached.source);
+      res.setHeader('Cache-Control', 'public, max-age=86400');
+      return res.send(cached.buffer);
+    }
+
+    // B. Check for demonstration / fallback mock product
+    if (productId.startsWith('cdse-mock') || productId.startsWith('mock-')) {
+      const svgBuffer = createDemoFallbackSvg(productId);
+      res.setHeader('Content-Type', 'image/svg+xml');
+      res.setHeader('X-Preview-Source', 'demo_fallback');
+      res.setHeader('Cache-Control', 'public, max-age=3600');
+      return res.send(svgBuffer);
+    }
+
+    // C. Official CDSE OData Quicklook via Bearer Token (if available)
+    const authHeader = await getCDSEAuthHeader();
+    if (authHeader) {
+      try {
+        const cdseQuicklookUrl = `https://download.dataspace.copernicus.eu/odata/v1/Products(${productId})/Quicklook/$value`;
+        const qRes = await fetch(cdseQuicklookUrl, {
+          headers: {
+            'Authorization': authHeader,
+            'Accept': 'image/jpeg, image/png, */*'
+          }
+        });
+        if (qRes.ok) {
+          const arrayBuf = await qRes.arrayBuffer();
+          const buffer = Buffer.from(arrayBuf);
+          const cType = qRes.headers.get('content-type') || 'image/jpeg';
+          previewCache.set(productId, { buffer, contentType: cType, source: 'cdse_quicklook_api', timestamp: Date.now() });
+          res.setHeader('Content-Type', cType);
+          res.setHeader('X-Preview-Source', 'cdse_quicklook_api');
+          res.setHeader('Cache-Control', 'public, max-age=86400');
+          return res.send(buffer);
+        }
+      } catch (e: any) {
+        console.warn(`[CDSE Quicklook] Token request failed for ${productId}:`, e.message);
+      }
+    }
+
+    // D. Resolve exact Sentinel-2 L2A tile/date parameters
+    let targetProduct: any = null;
+    for (const entry of sentinel2Cache.values()) {
+      const found = entry.payload?.results?.find((p: any) => p.id === productId);
+      if (found) {
+        targetProduct = found;
+        break;
+      }
+    }
+
+    if (!targetProduct) {
+      try {
+        const metaUrl = `https://catalogue.dataspace.copernicus.eu/odata/v1/Products(${productId})?$expand=Attributes`;
+        const metaRes = await fetch(metaUrl, {
+          headers: { 'Accept': 'application/json', 'User-Agent': 'TerraVektor-Satellite-Discovery/1.0' }
+        });
+        if (metaRes.ok) {
+          const metaData: any = await metaRes.json();
+          const attrs: Record<string, any> = {};
+          if (Array.isArray(metaData.Attributes)) {
+            metaData.Attributes.forEach((a: any) => { if (a.Name) attrs[a.Name] = a.Value; });
+          }
+          targetProduct = {
+            id: metaData.Id,
+            name: metaData.Name,
+            acquisition_date: metaData.ContentDate?.Start || metaData.OriginDate,
+            tile_id: attrs.tileId,
+            platform: attrs.platformSerialIdentifier ? `Sentinel-2${attrs.platformSerialIdentifier}` : (metaData.Name?.startsWith('S2A') ? 'Sentinel-2A' : 'Sentinel-2B')
+          };
+        }
+      } catch (e: any) {
+        console.warn(`[Sentinel-2 Metadata] Failed to fetch metadata for ${productId}:`, e.message);
+      }
+    }
+
+    if (targetProduct && targetProduct.name) {
+      const tileMatch = targetProduct.tile_id || targetProduct.name.match(/_T([0-9]{2}[A-Z]{3})_/)?.[1];
+      const dateMatch = targetProduct.acquisition_date ? targetProduct.acquisition_date.slice(0, 10) : targetProduct.name.match(/_([0-9]{8})T/)?.[1];
+
+      if (tileMatch && tileMatch.length === 5 && dateMatch) {
+        const tile = tileMatch;
+        const utm = tile.slice(0, 2);
+        const latBand = tile.slice(2, 3);
+        const square = tile.slice(3, 5);
+        const cleanDate = dateMatch.replace(/-/g, '');
+        const year = cleanDate.slice(0, 4);
+        const monthNum = parseInt(cleanDate.slice(4, 6), 10);
+        const platform = targetProduct.name.startsWith('S2A') ? 'S2A' : 'S2B';
+
+        const mirrorUrl = `https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/${utm}/${latBand}/${square}/${year}/${monthNum}/${platform}_${tile}_${cleanDate}_0_L2A/thumbnail.jpg`;
+
+        try {
+          const imgRes = await fetch(mirrorUrl);
+          if (imgRes.ok) {
+            const arrayBuf = await imgRes.arrayBuffer();
+            const buffer = Buffer.from(arrayBuf);
+            previewCache.set(productId, {
+              buffer,
+              contentType: 'image/jpeg',
+              source: 'sentinel2_l2a_mirror',
+              timestamp: Date.now()
+            });
+            res.setHeader('Content-Type', 'image/jpeg');
+            res.setHeader('X-Preview-Source', 'sentinel2_l2a_mirror');
+            res.setHeader('Cache-Control', 'public, max-age=86400');
+            return res.send(buffer);
+          }
+        } catch (mirrorErr: any) {
+          console.warn(`[Sentinel-2 Mirror] Image fetch failed for ${productId}:`, mirrorErr.message);
+        }
+      }
+    }
+
+    // E. If all resolution paths fail
+    return res.status(404).json({
+      detail: `Imagery preview unavailable for product ID: ${productId}. No official CDSE quicklook or open Sentinel-2 thumbnail asset could be retrieved for this scene.`
+    });
+  }
+
+  app.get('/api/sentinel2/preview/:productId', handleSentinel2Preview);
+
+  // 9. Real Sentinel-2 Change Analysis (via Python Raster Service)
+  interface ChangeAnalysisRequest {
+    before_product_id: string;
+    after_product_id: string;
+    aoi_bbox?: [number, number, number, number]; // minLon, minLat, maxLon, maxLat
+    method?: 'ndvi_differencing';
+  }
+
+  interface ChangeAnalysisResult {
+    analysis_id: string;
+    before_product_id: string;
+    after_product_id: string;
+    data_mode: 'real_sentinel2' | 'processing_unavailable';
+    processing_method: string;
+    change_percentage: number;
+    before_ndvi_avg: number;
+    after_ndvi_avg: number;
+    change_mask_url: string;
+    before_image_url: string;
+    after_image_url: string;
+    statistics: {
+      total_valid_pixels: number;
+      changed_pixels: number;
+      unchanged_pixels: number;
+    };
+    metadata: {
+      before_date: string;
+      after_date: string;
+      before_cloud_cover: number;
+      after_cloud_cover: number;
+      aoi_bbox: [number, number, number, number] | null;
+      processing_time_ms: number;
+    };
+    source?: string;
+    reason?: string;
+    required_next_step?: string;
+    message?: string;
+  }
+
+  // In-memory cache for change analysis results
+  const changeAnalysisCache = new Map<string, ChangeAnalysisResult>();
+
+  const RASTER_SERVICE_URL = process.env.RASTER_SERVICE_URL || 'http://localhost:8001';
+
+  app.post('/api/change/analyze-sentinel2', async (req: Request, res: Response) => {
+    const startTime = Date.now();
+    try {
+      const { before_product_id, after_product_id, aoi_bbox, method = 'ndvi_differencing' } = req.body as ChangeAnalysisRequest;
+
+      if (!before_product_id || !after_product_id) {
+        return res.status(400).json({ detail: 'before_product_id and after_product_id are required' });
+      }
+
+      if (before_product_id === after_product_id) {
+        return res.status(400).json({ detail: 'before_product_id and after_product_id must be different' });
+      }
+
+      // Check cache
+      const cacheKey = `${before_product_id}_${after_product_id}_${method}`;
+      if (changeAnalysisCache.has(cacheKey)) {
+        const cached = changeAnalysisCache.get(cacheKey)!;
+        console.log(`[Change Analysis] Cache HIT for ${cacheKey}`);
+        return res.json(cached);
+      }
+
+      // Fetch product metadata from cache or CDSE
+      let beforeProduct: any = null;
+      let afterProduct: any = null;
+
+      for (const entry of sentinel2Cache.values()) {
+        const foundBefore = entry.payload?.results?.find((p: any) => p.id === before_product_id);
+        const foundAfter = entry.payload?.results?.find((p: any) => p.id === after_product_id);
+        if (foundBefore) beforeProduct = foundBefore;
+        if (foundAfter) afterProduct = foundAfter;
+      }
+
+      // If not in cache, try to fetch from CDSE
+      if (!beforeProduct) {
+        try {
+          const metaUrl = `https://catalogue.dataspace.copernicus.eu/odata/v1/Products(${before_product_id})?$expand=Attributes`;
+          const metaRes = await fetch(metaUrl, {
+            headers: { 'Accept': 'application/json', 'User-Agent': 'TerraVektor-Satellite-Discovery/1.0' }
+          });
+          if (metaRes.ok) {
+            const metaData: any = await metaRes.json();
+            const attrs: Record<string, any> = {};
+            if (Array.isArray(metaData.Attributes)) {
+              metaData.Attributes.forEach((a: any) => { if (a.Name) attrs[a.Name] = a.Value; });
+            }
+            beforeProduct = {
+              id: metaData.Id,
+              name: metaData.Name,
+              acquisition_date: metaData.ContentDate?.Start || metaData.OriginDate,
+              cloud_cover: attrs.cloudCover || 0,
+              tile_id: attrs.tileId,
+              data_mode: 'live_copernicus'
+            };
+          }
+        } catch (e: any) {
+          console.warn(`[Change Analysis] Failed to fetch before product metadata:`, e.message);
+        }
+      }
+
+      if (!afterProduct) {
+        try {
+          const metaUrl = `https://catalogue.dataspace.copernicus.eu/odata/v1/Products(${after_product_id})?$expand=Attributes`;
+          const metaRes = await fetch(metaUrl, {
+            headers: { 'Accept': 'application/json', 'User-Agent': 'TerraVektor-Satellite-Discovery/1.0' }
+          });
+          if (metaRes.ok) {
+            const metaData: any = await metaRes.json();
+            const attrs: Record<string, any> = {};
+            if (Array.isArray(metaData.Attributes)) {
+              metaData.Attributes.forEach((a: any) => { if (a.Name) attrs[a.Name] = a.Value; });
+            }
+            afterProduct = {
+              id: metaData.Id,
+              name: metaData.Name,
+              acquisition_date: metaData.ContentDate?.Start || metaData.OriginDate,
+              cloud_cover: attrs.cloudCover || 0,
+              tile_id: attrs.tileId,
+              data_mode: 'live_copernicus'
+            };
+          }
+        } catch (e: any) {
+          console.warn(`[Change Analysis] Failed to fetch after product metadata:`, e.message);
+        }
+      }
+
+      // If products not found, return processing unavailable error
+      if (!beforeProduct || !afterProduct) {
+        return res.status(503).json({
+          success: false,
+          data_mode: 'processing_unavailable',
+          reason: 'One or both Sentinel-2 products not found in cache or CDSE',
+          failed_source: 'product_discovery',
+          required_next_step: 'Ensure products are discovered via Sentinel-2 search first'
+        });
+      }
+
+      // Call Python raster service for real B4/B8 processing
+      console.log(`[Change Analysis] Calling Python raster service for real NDVI calculation`);
+      
+      const rasterRequestBody = {
+        before_product_name: beforeProduct.name,
+        after_product_name: afterProduct.name,
+        bbox: aoi_bbox || [73.70, 18.40, 74.05, 18.70],
+        change_threshold: 0.2
+      };
+
+      const rasterResponse = await fetch(`${RASTER_SERVICE_URL}/analyze-change`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(rasterRequestBody)
+      });
+
+      if (!rasterResponse.ok) {
+        const errorDetail = await rasterResponse.text();
+        console.error(`[Change Analysis] Raster service error: ${rasterResponse.status} - ${errorDetail}`);
+        return res.status(503).json({
+          success: false,
+          data_mode: 'processing_unavailable',
+          reason: `Python raster service unavailable: ${errorDetail}`,
+          failed_source: 'raster_service',
+          required_next_step: 'Start Python raster service and ensure dependencies are installed'
+        });
+      }
+
+      const rasterResult = await rasterResponse.json();
+
+      if (!rasterResult.success) {
+        return res.status(503).json(rasterResult);
+      }
+
+      // Transform raster service result to our API format
+      const analysisId = `analysis_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      
+      const result: ChangeAnalysisResult = {
+        analysis_id: analysisId,
+        before_product_id: before_product_id,
+        after_product_id: after_product_id,
+        data_mode: rasterResult.data_mode,
+        processing_method: 'ndvi_differencing',
+        change_percentage: rasterResult.statistics.change_percentage,
+        before_ndvi_avg: rasterResult.statistics.before_mean_ndvi,
+        after_ndvi_avg: rasterResult.statistics.after_mean_ndvi,
+        change_mask_url: `/api/change/mask/${analysisId}`,
+        before_image_url: `/api/sentinel2/preview/${before_product_id}`,
+        after_image_url: `/api/sentinel2/preview/${after_product_id}`,
+        statistics: {
+          total_pixels: rasterResult.statistics.total_valid_pixels,
+          changed_pixels: rasterResult.statistics.changed_pixels,
+          unchanged_pixels: rasterResult.statistics.unchanged_pixels
+        },
+        metadata: {
+          before_date: beforeProduct.acquisition_date,
+          after_date: afterProduct.acquisition_date,
+          before_cloud_cover: beforeProduct.cloud_cover,
+          after_cloud_cover: afterProduct.cloud_cover,
+          aoi_bbox: aoi_bbox || null,
+          processing_time_ms: rasterResult.processing_time_ms
+        },
+        source: rasterResult.source,
+        message: `Real NDVI calculation from Sentinel-2 B4/B8 spectral bands via public COG mirror`
+      };
+
+      // Cache result
+      changeAnalysisCache.set(cacheKey, result);
+
+      console.log(`[Change Analysis] Completed real analysis ${analysisId} in ${Date.now() - startTime}ms`);
+      res.json(result);
+
+    } catch (err: any) {
+      console.error('[Change Analysis] Error:', err);
+      return res.status(500).json({
+        success: false,
+        data_mode: 'processing_unavailable',
+        reason: err.message,
+        failed_source: 'express_server',
+        required_next_step: 'Check error logs and service configuration'
+      });
+    }
+  });
+
+  // Change mask visualization endpoint
+  app.get('/api/change/mask/:analysisId', (req: Request, res: Response) => {
+    const { analysisId } = req.params;
+    
+    // Find the analysis result
+    let analysisResult: ChangeAnalysisResult | null = null;
+    for (const result of changeAnalysisCache.values()) {
+      if (result.analysis_id === analysisId) {
+        analysisResult = result;
+        break;
+      }
+    }
+
+    if (!analysisResult) {
+      return res.status(404).json({ detail: 'Change analysis not found' });
+    }
+
+    // Return processing unavailable if not real data
+    if (analysisResult.data_mode !== 'real_sentinel2') {
+      return res.status(503).json({
+        detail: 'Change mask visualization only available for real Sentinel-2 data'
+      });
+    }
+
+    // For now, return a placeholder since we'd need the actual change mask from Python service
+    // The Python service should return the actual change mask raster
+    res.status(503).json({
+      detail: 'Change mask visualization requires Python raster service to return actual change mask raster'
+    });
+  });
+
+  // Get list of available change analyses
+  app.get('/api/change/analyses', (_req: Request, res: Response) => {
+    const analyses = Array.from(changeAnalysisCache.values());
+    res.json({
+      total_analyses: analyses.length,
+      analyses: analyses.map(a => ({
+        analysis_id: a.analysis_id,
+        before_product_id: a.before_product_id,
+        after_product_id: a.after_product_id,
+        data_mode: a.data_mode,
+        change_percentage: a.change_percentage,
+        created_at: new Date().toISOString()
+      }))
+  });
 
   // Frontend Serving (Dev via Vite middleware, Prod via express.static)
   if (process.env.NODE_ENV === 'production') {
