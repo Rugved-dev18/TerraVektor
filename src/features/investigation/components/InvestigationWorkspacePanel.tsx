@@ -18,6 +18,7 @@ import {
 } from 'lucide-react';
 import { format } from 'date-fns';
 import { reviewCandidate } from '../../../services/api';
+import { CandidateRegion } from '../../../types';
 
 export interface SceneSummary {
   id: string;
@@ -30,18 +31,7 @@ export interface SceneSummary {
   preview_url?: string;
 }
 
-export interface CandidateRegion {
-  id: string;
-  type: string;
-  pixel_count: number;
-  area_m2: number;
-  centroid: [number, number] | number[];
-  bounding_box: [number, number, number, number] | number[];
-  mean_delta_ndvi: number;
-  mean_delta_ndbi: number;
-  min_delta_ndvi?: number;
-  max_delta_ndbi?: number;
-}
+export type { CandidateRegion };
 
 interface InvestigationWorkspacePanelProps {
   candidate: CandidateRegion | null;
@@ -72,7 +62,8 @@ export const InvestigationWorkspacePanel: React.FC<InvestigationWorkspacePanelPr
   const [submittedMessage, setSubmittedMessage] = useState<string | null>(null);
 
   const isDemo = dataMode === 'demo_data';
-  const isConstruction = candidate?.type === 'new_construction_candidate';
+  const isConstruction = candidate?.type === 'possible_construction_candidate' || candidate?.type === 'new_construction_candidate';
+  const isBuiltUp = candidate?.type === 'built_up_change_candidate';
 
   const handleDecision = async (decision: 'confirmed' | 'rejected' | 'needs_review') => {
     if (!candidate) return;
@@ -210,18 +201,18 @@ export const InvestigationWorkspacePanel: React.FC<InvestigationWorkspacePanelPr
           <div className="space-y-3">
             {/* EVIDENCE COORDINATE MOTIF (Section 11) */}
             <div className="p-2 rounded bg-slate-50 border border-slate-200 flex items-center justify-between text-xs font-mono">
-              <div className="flex items-center space-x-1.5">
-                <MapPin className="w-3.5 h-3.5 text-teal-800" />
+              <div className="flex items-center space-x-1.5 min-w-0">
+                <MapPin className="w-3.5 h-3.5 text-teal-800 shrink-0" />
                 <span className="font-bold text-slate-900 font-sans">{candidate.id}</span>
                 <span className="text-slate-400">&bull;</span>
-                <span className="text-slate-700">
+                <span className="text-slate-700 truncate">
                   {candidate.centroid[1].toFixed(4)}° N, {candidate.centroid[0].toFixed(4)}° E
                 </span>
               </div>
-              <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded font-sans uppercase ${
-                isConstruction ? 'bg-orange-100 text-orange-900' : 'bg-purple-100 text-purple-900'
+              <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded font-sans uppercase shrink-0 ${
+                isConstruction ? 'bg-orange-100 text-orange-900' : isBuiltUp ? 'bg-purple-100 text-purple-900' : 'bg-sky-100 text-sky-900'
               }`}>
-                CHANGE CANDIDATE
+                {candidate.display_name || (isConstruction ? 'POSSIBLE CONSTRUCTION' : isBuiltUp ? 'BUILT-UP CHANGE' : 'SPECTRAL CHANGE')}
               </span>
             </div>
 
@@ -237,36 +228,46 @@ export const InvestigationWorkspacePanel: React.FC<InvestigationWorkspacePanelPr
                   <span className="font-mono">{format(new Date(beforeScene.acquisition_date), 'dd MMM yyyy')}</span>
                   <span className="font-mono text-[10px] text-slate-500">Cloud: {beforeScene.cloud_cover.toFixed(1)}%</span>
                 </div>
+                <div className="flex items-center justify-between text-[10px] font-mono text-slate-600 pt-0.5 border-t border-slate-100">
+                  <span>Candidate Baseline NDVI: <strong className="text-slate-800">{candidate.before_ndvi_mean !== undefined ? candidate.before_ndvi_mean.toFixed(3) : candidate.before_ndvi?.toFixed(3) ?? 'N/A'}</strong></span>
+                  <span>NDBI: <strong className="text-slate-800">{candidate.before_ndbi_mean !== undefined ? candidate.before_ndbi_mean.toFixed(3) : candidate.before_ndbi?.toFixed(3) ?? 'N/A'}</strong></span>
+                </div>
                 <div className="text-[10px] text-slate-500 font-mono truncate">
                   Tile {beforeScene.tile_id || '43QCA'} &bull; GSD 10m
                 </div>
               </div>
             </div>
 
-            {/* CHAIN NODE 2: SPECTRAL DIFFERENCE */}
+            {/* CHAIN NODE 2: CANDIDATE SPECTRAL DIFFERENCE */}
             <div className="relative pl-6 pb-2 border-l-2 border-teal-500/50">
               <div className="absolute -left-[7px] top-0 w-3 h-3 rounded-full bg-teal-800 ring-2 ring-white" />
               <div className="bg-teal-50/50 border border-teal-200 rounded p-2 text-xs space-y-1.5">
                 <div className="flex items-center justify-between text-[11px] font-mono">
-                  <span className="font-bold text-teal-950 uppercase">02 Spectral Differencing</span>
+                  <span className="font-bold text-teal-950 uppercase">02 Candidate Spectral Shift</span>
                   <span className="text-[10px] text-teal-800 font-semibold">&Delta; Bands</span>
                 </div>
                 <div className="grid grid-cols-2 gap-2 text-xs font-mono">
                   <div className="bg-white p-1.5 rounded border border-teal-200">
-                    <span className="text-[9px] text-slate-500 block uppercase">Canopy &Delta;NDVI</span>
+                    <span className="text-[9px] text-slate-500 block uppercase">Candidate &Delta;NDVI</span>
                     <span className="text-xs font-bold text-emerald-700 block">
-                      {candidate.mean_delta_ndvi.toFixed(3)}
+                      {candidate.mean_delta_ndvi?.toFixed(3) ?? candidate.delta_ndvi?.toFixed(3)}
+                    </span>
+                    <span className="text-[9px] text-slate-400 block font-mono">
+                      ({candidate.before_ndvi_mean?.toFixed(3)} &rarr; {candidate.after_ndvi_mean?.toFixed(3)})
                     </span>
                   </div>
                   <div className="bg-white p-1.5 rounded border border-teal-200">
-                    <span className="text-[9px] text-slate-500 block uppercase">Built-Up &Delta;NDBI</span>
+                    <span className="text-[9px] text-slate-500 block uppercase">Candidate &Delta;NDBI</span>
                     <span className="text-xs font-bold text-amber-700 block">
-                      +{candidate.mean_delta_ndbi.toFixed(3)}
+                      +{candidate.mean_delta_ndbi?.toFixed(3) ?? candidate.delta_ndbi?.toFixed(3)}
+                    </span>
+                    <span className="text-[9px] text-slate-400 block font-mono">
+                      ({candidate.before_ndbi_mean?.toFixed(3)} &rarr; {candidate.after_ndbi_mean?.toFixed(3)})
                     </span>
                   </div>
                 </div>
                 <div className="text-[10px] font-mono text-slate-600 flex items-center justify-between">
-                  <span>Pixels: {candidate.pixel_count}</span>
+                  <span>Candidate Pixels: {candidate.pixel_count}</span>
                   <span>Footprint: {candidate.area_m2.toLocaleString()} m²</span>
                 </div>
               </div>
@@ -284,6 +285,10 @@ export const InvestigationWorkspacePanel: React.FC<InvestigationWorkspacePanelPr
                   <span className="font-mono">{format(new Date(afterScene.acquisition_date), 'dd MMM yyyy')}</span>
                   <span className="font-mono text-[10px] text-slate-500">Cloud: {afterScene.cloud_cover.toFixed(1)}%</span>
                 </div>
+                <div className="flex items-center justify-between text-[10px] font-mono text-slate-600 pt-0.5 border-t border-slate-100">
+                  <span>Candidate Monitoring NDVI: <strong className="text-slate-800">{candidate.after_ndvi_mean !== undefined ? candidate.after_ndvi_mean.toFixed(3) : candidate.after_ndvi?.toFixed(3) ?? 'N/A'}</strong></span>
+                  <span>NDBI: <strong className="text-slate-800">{candidate.after_ndbi_mean !== undefined ? candidate.after_ndbi_mean.toFixed(3) : candidate.after_ndbi?.toFixed(3) ?? 'N/A'}</strong></span>
+                </div>
                 <div className="text-[10px] text-slate-500 font-mono truncate">
                   Tile {afterScene.tile_id || '43QCA'} &bull; GSD 10m
                 </div>
@@ -294,14 +299,17 @@ export const InvestigationWorkspacePanel: React.FC<InvestigationWorkspacePanelPr
             <div className="relative pl-6 pb-2 border-l-2 border-amber-500/40">
               <div className="absolute -left-[7px] top-0 w-3 h-3 rounded-full bg-amber-600 ring-2 ring-white" />
               <div className={`rounded p-2 text-xs space-y-1 border ${
-                isConstruction ? 'bg-orange-50/70 border-orange-200' : 'bg-purple-50/70 border-purple-200'
+                isConstruction ? 'bg-orange-50/70 border-orange-200' : isBuiltUp ? 'bg-purple-50/70 border-purple-200' : 'bg-sky-50/70 border-sky-200'
               }`}>
                 <div className="flex items-center justify-between text-[11px] font-mono">
                   <span className="font-bold uppercase text-slate-900">04 Spatial Candidate</span>
                   <span className="font-semibold text-slate-700">{(candidate.area_m2 / 10000).toFixed(2)} ha</span>
                 </div>
                 <div className="text-[11px] font-medium text-slate-800">
-                  {isConstruction ? 'New Construction Candidate' : 'Building Expansion Candidate'}
+                  {candidate.display_name || (isConstruction ? 'Possible Construction Activity' : isBuiltUp ? 'Built-up Change Candidate' : 'Spectral Change Candidate')}
+                </div>
+                <div className="text-[10px] text-slate-600 font-mono">
+                  Area: {candidate.area_m2.toLocaleString()} m² ({candidate.pixel_count} contiguous 10m pixels)
                 </div>
                 <div className="text-[9px] font-mono text-slate-500">
                   Bounds: [{candidate.bounding_box.map(n => n.toFixed(3)).join(', ')}]
@@ -327,7 +335,9 @@ export const InvestigationWorkspacePanel: React.FC<InvestigationWorkspacePanelPr
                   <span className="text-teal-800 font-bold shrink-0">01</span>
                   <div>
                     <span className="font-sans font-semibold text-slate-900">Vegetation signal changed</span>
-                    <div className="text-[10px] text-emerald-700">&Delta;NDVI: {candidate.mean_delta_ndvi.toFixed(3)} (Canopy clearing)</div>
+                    <div className="text-[10px] text-emerald-700">
+                      Candidate NDVI: {candidate.before_ndvi_mean?.toFixed(3) || '—'} &rarr; {candidate.after_ndvi_mean?.toFixed(3) || '—'} (&Delta;NDVI: {candidate.mean_delta_ndvi?.toFixed(3) ?? candidate.delta_ndvi?.toFixed(3)})
+                    </div>
                   </div>
                 </div>
 
@@ -335,7 +345,9 @@ export const InvestigationWorkspacePanel: React.FC<InvestigationWorkspacePanelPr
                   <span className="text-teal-800 font-bold shrink-0">02</span>
                   <div>
                     <span className="font-sans font-semibold text-slate-900">Built-up spectral signal changed</span>
-                    <div className="text-[10px] text-amber-700">&Delta;NDBI: +{candidate.mean_delta_ndbi.toFixed(3)} (Impervious reflection)</div>
+                    <div className="text-[10px] text-amber-700">
+                      Candidate NDBI: {candidate.before_ndbi_mean?.toFixed(3) || '—'} &rarr; {candidate.after_ndbi_mean?.toFixed(3) || '—'} (&Delta;NDBI: +{candidate.mean_delta_ndbi?.toFixed(3) ?? candidate.delta_ndbi?.toFixed(3)})
+                    </div>
                   </div>
                 </div>
 
@@ -343,7 +355,9 @@ export const InvestigationWorkspacePanel: React.FC<InvestigationWorkspacePanelPr
                   <span className="text-teal-800 font-bold shrink-0">03</span>
                   <div>
                     <span className="font-sans font-semibold text-slate-900">Spatial candidate cluster</span>
-                    <div className="text-[10px] text-slate-600">Area: {candidate.area_m2.toLocaleString()} m² ({candidate.pixel_count} contiguous 10m pixels)</div>
+                    <div className="text-[10px] text-slate-600">
+                      Area: {candidate.area_m2.toLocaleString()} m² ({candidate.pixel_count} contiguous 10m pixels = {(candidate.area_m2 / 10000).toFixed(2)} ha)
+                    </div>
                   </div>
                 </div>
               </div>

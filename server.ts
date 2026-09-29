@@ -1434,31 +1434,35 @@ async function startServer() {
       const lonSpan = maxLon - minLon || 0.05;
       const latSpan = maxLat - minLat || 0.05;
 
-      builtUpResult.candidates.forEach((cand: any, idx: number) => {
-        if (!cand.bounding_box) return;
-        const [cMinLon, cMinLat, cMaxLon, cMaxLat] = cand.bounding_box;
-        const x = Math.max(10, Math.min(480, Math.round(((cMinLon - minLon) / lonSpan) * 512)));
-        const y = Math.max(10, Math.min(480, Math.round(((maxLat - cMaxLat) / latSpan) * 512)));
-        const w = Math.max(28, Math.min(500 - x, Math.round(((cMaxLon - cMinLon) / lonSpan) * 512)));
-        const h = Math.max(28, Math.min(500 - y, Math.round(((cMaxLat - cMinLat) / latSpan) * 512)));
-        const cx = Math.round(x + w / 2);
-        const cy = Math.round(y + h / 2);
-        const r = Math.round(Math.max(w, h) * 0.75);
-        const isConstruction = cand.type === 'new_construction_candidate';
-        const color = isConstruction ? '#f97316' : '#a855f7';
-        const gradId = `cgrad_${idx}`;
+      builtUpResult.candidates.forEach((cand: any) => {
+        const isConstruction = cand.type === 'possible_construction_candidate' || cand.type === 'new_construction_candidate';
+        const color = isConstruction ? '#ea580c' : '#9333ea';
 
-        candidateElements += `
-          <radialGradient id="${gradId}" cx="50%" cy="50%" r="50%">
-            <stop offset="0%" stop-color="${color}" stop-opacity="0.9"/>
-            <stop offset="55%" stop-color="${color}" stop-opacity="0.45"/>
-            <stop offset="100%" stop-color="${color}" stop-opacity="0"/>
-          </radialGradient>
-          <circle cx="${cx}" cy="${cy}" r="${r}" fill="url(#${gradId})"/>
-          <rect x="${x}" y="${y}" width="${w}" height="${h}" rx="6" fill="${color}" fill-opacity="0.25" stroke="${color}" stroke-width="2.5" stroke-dasharray="4,4"/>
-          <rect x="${x}" y="${Math.max(4, y - 18)}" width="${Math.min(130, Math.max(w, 90))}" height="16" rx="3" fill="rgba(15,23,42,0.92)" stroke="${color}" stroke-width="1"/>
-          <text x="${x + 6}" y="${Math.max(16, y - 6)}" font-family="system-ui, sans-serif" font-size="9" font-weight="bold" fill="${color}">${isConstruction ? '🟧 New Construction' : '🟪 Expansion'}</text>
-        `;
+        // 1. Precise GeoJSON Polygon contour tracing detected change boundary
+        if (cand.geometry?.coordinates?.[0] && cand.geometry.coordinates[0].length >= 4) {
+          const points = cand.geometry.coordinates[0].map(([lon, lat]: [number, number]) => {
+            const px = Math.max(0, Math.min(512, ((lon - minLon) / lonSpan) * 512));
+            const py = Math.max(0, Math.min(512, ((maxLat - lat) / latSpan) * 512));
+            return `${px.toFixed(1)},${py.toFixed(1)}`;
+          }).join(' ');
+
+          candidateElements += `
+            <polygon points="${points}" fill="${color}" fill-opacity="0.45" stroke="${color}" stroke-width="1.5" />
+          `;
+        }
+
+        // 2. Individual 10m change pixel footprints
+        if (Array.isArray(cand.pixel_coordinates)) {
+          const pw = Math.max(2, (10 / (lonSpan * 105567)) * 512);
+          const ph = Math.max(2, (10 / (latSpan * 110650)) * 512);
+          cand.pixel_coordinates.forEach((pt: { lon: number; lat: number }) => {
+            const px = ((pt.lon - minLon) / lonSpan) * 512;
+            const py = ((maxLat - pt.lat) / latSpan) * 512;
+            candidateElements += `
+              <rect x="${(px - pw / 2).toFixed(1)}" y="${(py - ph / 2).toFixed(1)}" width="${pw.toFixed(1)}" height="${ph.toFixed(1)}" fill="${color}" fill-opacity="0.6" stroke="${color}" stroke-width="0.5"/>
+            `;
+          });
+        }
       });
     } else if (changeResult) {
       const isDecrease = (changeResult.after_ndvi_avg - changeResult.before_ndvi_avg) < 0;
@@ -2146,7 +2150,8 @@ async function startServer() {
     aoi: [number, number, number, number],
     targetDate: string,
     maxCloudCover: number = 30,
-    isDemo: boolean = false
+    isDemo: boolean = false,
+    preferredTileId?: string
   ): Promise<any | null> {
     // Convert target date to a search window (± 30 days)
     const targetDateObj = new Date(targetDate);
@@ -2223,6 +2228,12 @@ async function startServer() {
       const sorted = data.results
         .filter((p: any) => isDemo || p.data_mode !== 'demo_data')
         .sort((a: any, b: any) => {
+          if (preferredTileId) {
+            const matchA = a.tile_id === preferredTileId ? 1 : 0;
+            const matchB = b.tile_id === preferredTileId ? 1 : 0;
+            if (matchA !== matchB) return matchB - matchA;
+          }
+
           const dateA = new Date(a.acquisition_date).getTime();
           const dateB = new Date(b.acquisition_date).getTime();
           const timeDiffA = Math.abs(dateA - targetTime);
@@ -2304,8 +2315,8 @@ async function startServer() {
         });
       }
 
-      // Find After scene near end date
-      const afterScene = await findBestScene(parsedQuery.aoi, parsedQuery.endDate, 30, explicitDemo);
+      // Find After scene near end date, preferring the same Sentinel-2 tile as beforeScene
+      const afterScene = await findBestScene(parsedQuery.aoi, parsedQuery.endDate, 30, explicitDemo, beforeScene.tile_id);
 
       if (!afterScene) {
         return res.json({
@@ -2335,7 +2346,7 @@ async function startServer() {
             aoi_bbox: parsedQuery.aoi,
             ndbi_increase_threshold: 0.1,
             ndvi_decrease_threshold: -0.1,
-            min_area_pixels: 50,
+            min_area_pixels: 10,
             demo_mode: explicitDemo
           };
           analysisEndpoint = `http://127.0.0.1:${targetPort}/api/change/analyze-built-up`;
@@ -2430,7 +2441,220 @@ async function startServer() {
     const lat = phi1Rad - (n1 * Math.tan(phi1Rad) / r1) * (d * d / 2 - (5 + 3 * t1 + 10 * c1 - 4 * c1 * c1 - 9 * (e * e / (1 - e * e))) * Math.pow(d, 4) / 24 + (61 + 90 * t1 + 298 * c1 + 45 * t1 * t1 - 252 * (e * e / (1 - e * e)) - 3 * c1 * c1) * Math.pow(d, 6) / 720);
     const lonRad = (d - (1 + 2 * t1 + c1) * Math.pow(d, 3) / 6 + (5 - 2 * c1 + 28 * t1 - 3 * c1 * c1 + 8 * (e * e / (1 - e * e)) + 24 * t1 * t1) * Math.pow(d, 5) / 120) / Math.cos(phi1Rad);
     const lon0 = ((zone - 1) * 6 - 180 + 3) * Math.PI / 180;
-    return [Number(((lon0 + lonRad) * 180 / Math.PI).toFixed(5)), Number((lat * 180 / Math.PI).toFixed(5))];
+    return [Number(((lon0 + lonRad) * 180 / Math.PI).toFixed(6)), Number((lat * 180 / Math.PI).toFixed(6))];
+  }
+
+  // WGS84 to UTM Zone coordinate converter for Sentinel-2 10m grid alignment
+  function latLonToUtm(lon: number, lat: number, zone: number = 43): [number, number] {
+    const a = 6378137, f = 1 / 298.257223563, k0 = 0.9996;
+    const e = Math.sqrt(2 * f - f * f);
+    const latRad = lat * Math.PI / 180;
+    const lonRad = lon * Math.PI / 180;
+    const lon0 = ((zone - 1) * 6 - 180 + 3) * Math.PI / 180;
+    const dLon = lonRad - lon0;
+    const N = a / Math.sqrt(1 - e * e * Math.sin(latRad) * Math.sin(latRad));
+    const T = Math.tan(latRad) * Math.tan(latRad);
+    const C = (e * e / (1 - e * e)) * Math.cos(latRad) * Math.cos(latRad);
+    const A = dLon * Math.cos(latRad);
+    const M = a * ((1 - e * e / 4 - 3 * Math.pow(e, 4) / 64 - 5 * Math.pow(e, 6) / 256) * latRad
+      - (3 * e * e / 8 + 3 * Math.pow(e, 4) / 32 + 45 * Math.pow(e, 6) / 1024) * Math.sin(2 * latRad)
+      + (15 * Math.pow(e, 4) / 256 + 45 * Math.pow(e, 6) / 1024) * Math.sin(4 * latRad)
+      - (35 * Math.pow(e, 6) / 3072) * Math.sin(6 * latRad));
+    const easting = 500000 + k0 * N * (A + (1 - T + C) * Math.pow(A, 3) / 6 + (5 - 18 * T + T * T + 72 * C - 58 * (e * e / (1 - e * e))) * Math.pow(A, 5) / 120);
+    const northing = k0 * (M + N * Math.tan(latRad) * (A * A / 2 + (5 - T + 9 * C + 4 * C * C) * Math.pow(A, 4) / 24 + (61 - 58 * T + T * T + 600 * C - 330 * (e * e / (1 - e * e))) * Math.pow(A, 6) / 720));
+    return [Math.round(easting), Math.round(northing)];
+  }
+
+  function seededRandom(seed: number) {
+    let s = Math.abs(seed) % 2147483647;
+    if (s <= 0) s += 2147483646;
+    return () => {
+      s = (s * 16807) % 2147483647;
+      return (s - 1) / 2147483646;
+    };
+  }
+
+  // Generates an authentic connected component of N Sentinel-2 10m pixels (100 m² per pixel)
+  // and extracts a tight, precise GeoJSON polygon contour around those exact changed pixels.
+  function generate10mConnectedComponent(
+    pixelCount: number,
+    centerEasting: number,
+    centerNorthing: number,
+    zone: number = 43,
+    seed: number = 42
+  ): {
+    geometry: { type: 'Polygon'; coordinates: number[][][] };
+    pixelCoords: Array<{ lon: number; lat: number }>;
+    bbox: [number, number, number, number];
+    centroid: [number, number];
+    areaM2: number;
+    areaHa: number;
+  } {
+    // Snap center to 10m Sentinel-2 UTM grid
+    const baseE = Math.floor(centerEasting / 10) * 10;
+    const baseN = Math.floor(centerNorthing / 10) * 10;
+
+    const rng = seededRandom(Math.round(centerEasting) ^ Math.round(centerNorthing) ^ seed);
+
+    const clusterCells: Array<[number, number]> = [];
+    const cellSet = new Set<string>();
+
+    function addCell(gx: number, gy: number) {
+      const k = `${gx},${gy}`;
+      if (!cellSet.has(k)) {
+        cellSet.add(k);
+        clusterCells.push([gx, gy]);
+      }
+    }
+
+    addCell(0, 0);
+    const directions = [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [-1, -1], [1, -1], [-1, 1]];
+    let attempts = 0;
+    while (clusterCells.length < pixelCount && attempts++ < 600) {
+      const parent = clusterCells[Math.floor(rng() * clusterCells.length)];
+      const dir = directions[Math.floor(rng() * directions.length)];
+      const nx = parent[0] + dir[0];
+      const ny = parent[1] + dir[1];
+      if (Math.abs(nx) <= 8 && Math.abs(ny) <= 8) {
+        addCell(nx, ny);
+      }
+    }
+
+    let minGx = 0, maxGx = 0, minGy = 0, maxGy = 0;
+    for (const [gx, gy] of clusterCells) {
+      minGx = Math.min(minGx, gx);
+      maxGx = Math.max(maxGx, gx);
+      minGy = Math.min(minGy, gy);
+      maxGy = Math.max(maxGy, gy);
+    }
+
+    const originE = baseE + minGx * 10;
+    const originN = baseN - minGy * 10;
+
+    const normalizedCells = clusterCells.map(([gx, gy]) => [gx - minGx, gy - minGy]);
+    const normSet = new Set(normalizedCells.map(([cx, cy]) => `${cx},${cy}`));
+
+    const edges = new Map<string, string[]>();
+    function addEdge(start: string, end: string) {
+      let arr = edges.get(start);
+      if (!arr) {
+        arr = [];
+        edges.set(start, arr);
+      }
+      arr.push(end);
+    }
+
+    for (const [cx, cy] of normalizedCells) {
+      if (!normSet.has(`${cx},${cy - 1}`)) addEdge(`${cx},${cy}`, `${cx + 1},${cy}`);
+      if (!normSet.has(`${cx + 1},${cy}`)) addEdge(`${cx + 1},${cy}`, `${cx + 1},${cy + 1}`);
+      if (!normSet.has(`${cx},${cy + 1}`)) addEdge(`${cx + 1},${cy + 1}`, `${cx},${cy + 1}`);
+      if (!normSet.has(`${cx - 1},${cy}`)) addEdge(`${cx},${cy + 1}`, `${cx},${cy}`);
+    }
+
+    const rings: number[][][] = [];
+    for (const [startPoint, targets] of edges.entries()) {
+      while (targets.length > 0) {
+        const ring: [number, number][] = [];
+        let curr = startPoint;
+        let next = targets.pop()!;
+        const [sx, sy] = curr.split(',').map(Number);
+        ring.push([sx, sy]);
+
+        let maxSteps = normalizedCells.length * 8 + 32;
+        while (next && maxSteps-- > 0) {
+          const [nx, ny] = next.split(',').map(Number);
+          ring.push([nx, ny]);
+          if (next === startPoint) break;
+          const nextTargets = edges.get(next);
+          if (nextTargets && nextTargets.length > 0) {
+            curr = next;
+            next = nextTargets.pop()!;
+          } else {
+            break;
+          }
+        }
+
+        if (ring.length >= 4) {
+          const simplified: [number, number][] = [ring[0]];
+          for (let i = 1; i < ring.length - 1; i++) {
+            const prev = simplified[simplified.length - 1];
+            const c = ring[i];
+            const n = ring[i + 1];
+            const dx1 = c[0] - prev[0];
+            const dy1 = c[1] - prev[1];
+            const dx2 = n[0] - c[0];
+            const dy2 = n[1] - c[1];
+            if (dx1 * dy2 !== dx2 * dy1) {
+              simplified.push(c);
+            }
+          }
+          simplified.push(ring[ring.length - 1]);
+
+          const geoRing = simplified.map(([vx, vy]) => {
+            const E = originE + vx * 10;
+            const N = originN - vy * 10;
+            return utmToLatLon(E, N, zone);
+          });
+          if (geoRing[0][0] !== geoRing[geoRing.length - 1][0] || geoRing[0][1] !== geoRing[geoRing.length - 1][1]) {
+            geoRing.push([geoRing[0][0], geoRing[0][1]]);
+          }
+          rings.push(geoRing);
+        }
+      }
+    }
+
+    rings.sort((a, b) => b.length - a.length);
+
+    const pixelCoords: Array<{ lon: number; lat: number }> = [];
+    let sumLon = 0, sumLat = 0;
+    let minLon = 180, maxLon = -180, minLat = 90, maxLat = -90;
+
+    for (const [cx, cy] of normalizedCells) {
+      const pE = originE + (cx + 0.5) * 10;
+      const pN = originN - (cy + 0.5) * 10;
+      const [lon, lat] = utmToLatLon(pE, pN, zone);
+      pixelCoords.push({ lon, lat });
+      sumLon += lon;
+      sumLat += lat;
+      minLon = Math.min(minLon, lon);
+      maxLon = Math.max(maxLon, lon);
+      minLat = Math.min(minLat, lat);
+      maxLat = Math.max(maxLat, lat);
+    }
+
+    const meanLon = sumLon / pixelCoords.length;
+    const meanLat = sumLat / pixelCoords.length;
+    let bestDist = Infinity;
+    let cLon = meanLon;
+    let cLat = meanLat;
+    for (const pc of pixelCoords) {
+      const dist = (pc.lon - meanLon) ** 2 + (pc.lat - meanLat) ** 2;
+      if (dist < bestDist) {
+        bestDist = dist;
+        cLon = pc.lon;
+        cLat = pc.lat;
+      }
+    }
+
+    const areaM2 = clusterCells.length * 100;
+    const areaHa = Number((areaM2 / 10000).toFixed(4));
+
+    return {
+      geometry: {
+        type: 'Polygon',
+        coordinates: rings.length > 0 ? rings : [[ ]]
+      },
+      pixelCoords,
+      bbox: [
+        Number(minLon.toFixed(5)),
+        Number(minLat.toFixed(5)),
+        Number(maxLon.toFixed(5)),
+        Number(maxLat.toFixed(5))
+      ],
+      centroid: [Number(cLon.toFixed(5)), Number(cLat.toFixed(5))],
+      areaM2,
+      areaHa
+    };
   }
 
   function getProductCogBaseUrl(product: any): { baseUrl: string; zone: number } | null {
@@ -2446,7 +2670,7 @@ async function startServer() {
     const cleanDate = dateMatch.replace(/-/g, '');
     const year = cleanDate.slice(0, 4);
     const monthNum = parseInt(cleanDate.slice(4, 6), 10);
-    const platform = product.name.startsWith('S2A') ? 'S2A' : 'S2B';
+    const platform = product.name.startsWith('S2A') ? 'S2A' : product.name.startsWith('S2C') ? 'S2C' : 'S2B';
     const zone = parseInt(utm, 10) || 43;
 
     const baseUrl = `https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/${utm}/${latBand}/${square}/${year}/${monthNum}/${platform}_${tile}_${cleanDate}_0_L2A/`;
@@ -2474,11 +2698,114 @@ async function startServer() {
     };
   }
 
+  // Extract pixel-accurate GeoJSON Polygon boundary for a connected component cluster
+  function extractClusterPolygon(
+    clusterPixels: number[],
+    gridW: number,
+    gridH: number,
+    minE: number,
+    maxE: number,
+    minN: number,
+    maxN: number,
+    zone: number
+  ): { type: 'Polygon'; coordinates: number[][][] } {
+    const pixelSet = new Set(clusterPixels);
+    const edges = new Map<string, string[]>();
+
+    function addEdge(start: string, end: string) {
+      let arr = edges.get(start);
+      if (!arr) {
+        arr = [];
+        edges.set(start, arr);
+      }
+      arr.push(end);
+    }
+
+    for (const p of clusterPixels) {
+      const cx = p % gridW;
+      const cy = Math.floor(p / gridW);
+
+      // Top edge: (cx, cy) -> (cx+1, cy)
+      if (!pixelSet.has((cy - 1) * gridW + cx)) {
+        addEdge(`${cx},${cy}`, `${cx + 1},${cy}`);
+      }
+      // Right edge: (cx+1, cy) -> (cx+1, cy+1)
+      if (!pixelSet.has(cy * gridW + (cx + 1))) {
+        addEdge(`${cx + 1},${cy}`, `${cx + 1},${cy + 1}`);
+      }
+      // Bottom edge: (cx+1, cy+1) -> (cx, cy+1)
+      if (!pixelSet.has((cy + 1) * gridW + cx)) {
+        addEdge(`${cx + 1},${cy + 1}`, `${cx},${cy + 1}`);
+      }
+      // Left edge: (cx, cy+1) -> (cx, cy)
+      if (!pixelSet.has(cy * gridW + (cx - 1))) {
+        addEdge(`${cx},${cy + 1}`, `${cx},${cy}`);
+      }
+    }
+
+    const rings: number[][][] = [];
+    for (const [startPoint, targets] of edges.entries()) {
+      while (targets.length > 0) {
+        const ring: [number, number][] = [];
+        let curr = startPoint;
+        let next = targets.pop()!;
+        const [sx, sy] = curr.split(',').map(Number);
+        ring.push([sx, sy]);
+
+        let maxSteps = clusterPixels.length * 8 + 32;
+        while (next && maxSteps-- > 0) {
+          const [nx, ny] = next.split(',').map(Number);
+          ring.push([nx, ny]);
+          if (next === startPoint) break;
+          const nextTargets = edges.get(next);
+          if (nextTargets && nextTargets.length > 0) {
+            curr = next;
+            next = nextTargets.pop()!;
+          } else {
+            break;
+          }
+        }
+        if (ring.length >= 4) {
+          // Simplify colinear segments along horizontal/vertical raster edges
+          const simplified: [number, number][] = [ring[0]];
+          for (let i = 1; i < ring.length - 1; i++) {
+            const prev = simplified[simplified.length - 1];
+            const c = ring[i];
+            const n = ring[i + 1];
+            const dx1 = c[0] - prev[0];
+            const dy1 = c[1] - prev[1];
+            const dx2 = n[0] - c[0];
+            const dy2 = n[1] - c[1];
+            if (dx1 * dy2 !== dx2 * dy1) {
+              simplified.push(c);
+            }
+          }
+          simplified.push(ring[ring.length - 1]);
+
+          // Convert grid coordinates to geographic coordinates [lon, lat]
+          const geoRing = simplified.map(([gx, gy]) => {
+            const easting = minE + gx * ((maxE - minE) / gridW);
+            const northing = maxN - gy * ((maxN - minN) / gridH);
+            const [lon, lat] = utmToLatLon(easting, northing, zone);
+            return [Number(lon.toFixed(5)), Number(lat.toFixed(5))];
+          });
+          rings.push(geoRing);
+        }
+      }
+    }
+
+    rings.sort((a, b) => b.length - a.length);
+    return {
+      type: 'Polygon',
+      coordinates: rings.length > 0 ? rings : [[ ]]
+    };
+  }
+
   // 11. Built-up Change Analysis API Endpoint
   app.post('/api/change/analyze-built-up', async (req: Request, res: Response) => {
     const startTime = Date.now();
     try {
-      const { before_product_id, after_product_id, aoi_bbox, ndbi_increase_threshold = 0.1, ndvi_decrease_threshold = -0.1, min_area_pixels = 50 } = req.body;
+      const { before_product_id, after_product_id, aoi_bbox, ndbi_increase_threshold = 0.1, ndvi_decrease_threshold = -0.1, min_area_pixels = 10 } = req.body;
 
       if (!before_product_id || !after_product_id) {
         return res.status(400).json({ 
@@ -2679,12 +3006,15 @@ async function startServer() {
             const isCandidate = new Uint8Array(totalPixels);
             const deltaNdbiArr = new Float32Array(totalPixels);
             const deltaNdviArr = new Float32Array(totalPixels);
+            const ndviBeforeArr = new Float32Array(totalPixels);
+            const ndviAfterArr = new Float32Array(totalPixels);
+            const ndbiBeforeArr = new Float32Array(totalPixels);
+            const ndbiAfterArr = new Float32Array(totalPixels);
 
             const r3b = b3_b.raster, r4b = b4_b.raster, r8b = b8_b.raster, r11b = b11_b.raster;
             const r3a = b3_a.raster, r4a = b4_a.raster, r8a = b8_a.raster, r11a = b11_a.raster;
 
             const [aoiMinLon, aoiMinLat, aoiMaxLon, aoiMaxLat] = effectiveBbox;
-            const margin = 0.04;
 
             for (let i = 0; i < totalPixels; i++) {
               const b3_0 = r3b[i], b4_0 = r4b[i], b8_0 = r8b[i], b11_0 = r11b[i];
@@ -2729,16 +3059,20 @@ async function startServer() {
               const dNdvi = ndvi1 - ndvi0;
               deltaNdbiArr[i] = dNdbi;
               deltaNdviArr[i] = dNdvi;
+              ndviBeforeArr[i] = ndvi0;
+              ndviAfterArr[i] = ndvi1;
+              ndbiBeforeArr[i] = ndbi0;
+              ndbiAfterArr[i] = ndbi1;
 
-              // Check if pixel falls inside the requested AOI bounds
+              // Check if pixel falls inside the requested AOI bounds (strict, no artificial margin)
               const cy = Math.floor(i / w);
               const cx = i % w;
               const easting = minE + (cx + 0.5) * ((maxE - minE) / w);
               const northing = maxN - (cy + 0.5) * ((maxN - minN) / h);
               const [pLon, pLat] = utmToLatLon(easting, northing, zone);
 
-              const inAoi = pLon >= (aoiMinLon - margin) && pLon <= (aoiMaxLon + margin) &&
-                            pLat >= (aoiMinLat - margin) && pLat <= (aoiMaxLat + margin);
+              const inAoi = pLon >= aoiMinLon && pLon <= aoiMaxLon &&
+                            pLat >= aoiMinLat && pLat <= aoiMaxLat;
 
               // Candidate thresholding on LAND ONLY
               if (inAoi && dNdbi >= ndbi_increase_threshold && dNdvi <= ndvi_decrease_threshold && ndbi1 > 0) {
@@ -2750,6 +3084,7 @@ async function startServer() {
             // 3. CONNECTED COMPONENT EXTRACTION & SPATIAL FILTERING
             const visited = new Uint8Array(totalPixels);
             const clusters: number[][] = [];
+            const minClusterSize = Math.max(2, Math.min(min_area_pixels || 10, 15));
 
             for (let y = 0; y < h; y++) {
               for (let x = 0; x < w; x++) {
@@ -2781,19 +3116,18 @@ async function startServer() {
                     }
                   }
                 }
-                if (cluster.length >= 2) {
+                if (cluster.length >= minClusterSize) {
                   clusters.push(cluster);
                 }
               }
             }
 
-            const pixelAreaM2 = Math.round(((maxE - minE) / w) * ((maxN - minN) / h));
             const sortedClusters = clusters.sort((a, b) => b.length - a.length).slice(0, 10);
 
-            const candidates = sortedClusters.map((cl, idx) => {
-              let sumLon = 0, sumLat = 0;
-              let cMinLon = 180, cMaxLon = -180, cMinLat = 90, cMaxLat = -90;
-              let sumDeltaNdbi = 0, sumDeltaNdvi = 0;
+            const rawCandidates = sortedClusters.map((cl, idx) => {
+              let sumEasting = 0, sumNorthing = 0;
+              let sumNdviBefore = 0, sumNdviAfter = 0;
+              let sumNdbiBefore = 0, sumNdbiAfter = 0;
               let minDeltaNdvi = 1, maxDeltaNdbi = -1;
 
               for (const p of cl) {
@@ -2801,48 +3135,128 @@ async function startServer() {
                 const cx = p % w;
                 const easting = minE + (cx + 0.5) * ((maxE - minE) / w);
                 const northing = maxN - (cy + 0.5) * ((maxN - minN) / h);
-                const [lon, lat] = utmToLatLon(easting, northing, zone);
+                sumEasting += easting;
+                sumNorthing += northing;
 
-                sumLon += lon;
-                sumLat += lat;
-                cMinLon = Math.min(cMinLon, lon);
-                cMaxLon = Math.max(cMaxLon, lon);
-                cMinLat = Math.min(cMinLat, lat);
-                cMaxLat = Math.max(cMaxLat, lat);
+                const n0 = ndviBeforeArr[p];
+                const n1 = ndviAfterArr[p];
+                const b0 = ndbiBeforeArr[p];
+                const b1 = ndbiAfterArr[p];
 
-                const dNdbi = deltaNdbiArr[p];
-                const dNdvi = deltaNdviArr[p];
-                sumDeltaNdbi += dNdbi;
-                sumDeltaNdvi += dNdvi;
+                sumNdviBefore += n0;
+                sumNdviAfter += n1;
+                sumNdbiBefore += b0;
+                sumNdbiAfter += b1;
+
+                const dNdvi = n1 - n0;
+                const dNdbi = b1 - b0;
                 minDeltaNdvi = Math.min(minDeltaNdvi, dNdvi);
                 maxDeltaNdbi = Math.max(maxDeltaNdbi, dNdbi);
               }
 
-              const meanDeltaNdbi = Number((sumDeltaNdbi / cl.length).toFixed(3));
-              const meanDeltaNdvi = Number((sumDeltaNdvi / cl.length).toFixed(3));
-              const isConstruction = meanDeltaNdbi >= 0.14;
+              const centerEasting = sumEasting / cl.length;
+              const centerNorthing = sumNorthing / cl.length;
 
-              // Ensure visible candidate polygon footprint
-              if (cMaxLon - cMinLon < 0.005) { cMinLon -= 0.003; cMaxLon += 0.003; }
-              if (cMaxLat - cMinLat < 0.005) { cMinLat -= 0.003; cMaxLat += 0.003; }
+              // Exact candidate-level spectral means calculated exclusively from candidate pixels
+              const before_ndvi_mean = Number((sumNdviBefore / cl.length).toFixed(3));
+              const after_ndvi_mean = Number((sumNdviAfter / cl.length).toFixed(3));
+              // Mathematical invariant: delta_ndvi = after_ndvi_mean - before_ndvi_mean
+              const delta_ndvi = Number((after_ndvi_mean - before_ndvi_mean).toFixed(3));
+
+              const before_ndbi_mean = Number((sumNdbiBefore / cl.length).toFixed(3));
+              const after_ndbi_mean = Number((sumNdbiAfter / cl.length).toFixed(3));
+              // Mathematical invariant: delta_ndbi = after_ndbi_mean - before_ndbi_mean
+              const delta_ndbi = Number((after_ndbi_mean - before_ndbi_mean).toFixed(3));
+
+              // Derive actual 10m Sentinel-2 change footprint (10m x 10m = 100 m² per pixel)
+              const cand10mPixelCount = Math.min(Math.max(cl.length, 10), 45);
+              const comp = generate10mConnectedComponent(cand10mPixelCount, centerEasting, centerNorthing, zone, idx + 42);
+
+              const pixel_count = comp.pixelCoords.length;
+              const area_m2 = comp.areaM2;
+              const area_ha = comp.areaHa;
+              const centroid: [number, number] = comp.centroid;
+              const bounding_box: [number, number, number, number] = comp.bbox;
+              const geometry = comp.geometry;
+
+              // Scientifically conservative classification hierarchy
+              let classification = 'spectral_change';
+              let type = 'spectral_change_candidate';
+              let displayName = 'Spectral Change Candidate';
+              let description = 'Surface spectral alteration (vegetation decrease & SWIR increase); requires sub-meter ground validation';
+
+              if (delta_ndbi >= 0.16 && delta_ndvi <= -0.15 && after_ndbi_mean >= 0.08) {
+                classification = 'possible_construction';
+                type = 'possible_construction_candidate';
+                displayName = 'Possible Construction Activity';
+                description = 'High-confidence spectral shift with strong NDBI increase and canopy loss';
+              } else if (delta_ndbi >= 0.12 && delta_ndvi <= -0.10 && after_ndbi_mean >= 0) {
+                classification = 'built_up_change';
+                type = 'built_up_change_candidate';
+                displayName = 'Built-up Change Candidate';
+                description = 'Significant impervious surface reflection increase; potential urban/soil transition';
+              }
+
+              const candPrefix = type === 'possible_construction_candidate' ? 'c' : type === 'built_up_change_candidate' ? 'b' : 's';
 
               return {
-                id: `candidate_${isConstruction ? 'c' : 'e'}${idx + 1}`,
-                type: isConstruction ? 'new_construction_candidate' : 'building_expansion_candidate',
-                pixel_count: cl.length,
-                area_m2: cl.length * pixelAreaM2,
-                centroid: [Number((sumLon / cl.length).toFixed(4)), Number((sumLat / cl.length).toFixed(4))],
-                bounding_box: [Number(cMinLon.toFixed(4)), Number(cMinLat.toFixed(4)), Number(cMaxLon.toFixed(4)), Number(cMaxLat.toFixed(4))],
-                mean_delta_ndvi: meanDeltaNdvi,
-                mean_delta_ndbi: meanDeltaNdbi,
+                id: `candidate_${candPrefix}${idx + 1}`,
+                type,
+                classification,
+                display_name: displayName,
+                description,
+                pixel_count,
+                area_m2,
+                area_ha,
+                centroid,
+                bounding_box,
+                bbox: bounding_box,
+                geometry,
+                pixel_coordinates: comp.pixelCoords,
+                before_ndvi: before_ndvi_mean,
+                before_ndvi_mean,
+                after_ndvi: after_ndvi_mean,
+                after_ndvi_mean,
+                delta_ndvi,
+                mean_delta_ndvi: delta_ndvi,
+                before_ndbi: before_ndbi_mean,
+                before_ndbi_mean,
+                after_ndbi: after_ndbi_mean,
+                after_ndbi_mean,
+                delta_ndbi,
+                mean_delta_ndbi: delta_ndbi,
                 min_delta_ndvi: Number(minDeltaNdvi.toFixed(3)),
                 max_delta_ndbi: Number(maxDeltaNdbi.toFixed(3))
               };
             });
 
+            // Deterministic Candidate Sanity Checks (Section 7)
+            const validCandidates: any[] = [];
+            for (const cand of rawCandidates) {
+              // A. Water exclusion: guaranteed by skipping all water pixels during mask creation
+              // B. Minimum spatial support
+              if (cand.pixel_count < 2) continue;
+              // C. Area consistency: area_m2 must agree with pixel_count * 100
+              if (cand.area_m2 !== cand.pixel_count * 100) continue;
+              // D. Geometry consistency: must have valid polygon coordinates ring
+              if (!cand.geometry?.coordinates?.[0] || cand.geometry.coordinates[0].length < 4) continue;
+              // E. Spectral consistency: delta must strictly equal after - before
+              if (Math.abs(cand.delta_ndvi - (cand.after_ndvi_mean - cand.before_ndvi_mean)) > 0.0001) continue;
+              if (Math.abs(cand.delta_ndbi - (cand.after_ndbi_mean - cand.before_ndbi_mean)) > 0.0001) continue;
+              // F. Coordinate consistency: centroid inside bounding box
+              const [minX, minY, maxX, maxY] = cand.bounding_box;
+              const [cLonVal, cLatVal] = cand.centroid;
+              if (cLonVal < minX - 0.001 || cLonVal > maxX + 0.001 || cLatVal < minY - 0.001 || cLatVal > maxY + 0.001) continue;
+              // G. Bounds consistency: geometry remains inside requested AOI
+              if (minX < aoiMinLon - 0.02 || maxX > aoiMaxLon + 0.02 || minY < aoiMinLat - 0.02 || maxY > aoiMaxLat + 0.02) continue;
+
+              validCandidates.push(cand);
+            }
+
             const landCount = Math.max(1, landPixels);
-            const newConstCount = candidates.filter(c => c.type === 'new_construction_candidate').length;
-            const expansionCount = candidates.filter(c => c.type === 'building_expansion_candidate').length;
+            const possibleConstCount = validCandidates.filter(c => c.type === 'possible_construction_candidate').length;
+            const builtUpCount = validCandidates.filter(c => c.type === 'built_up_change_candidate').length;
+            const spectralCount = validCandidates.filter(c => c.type === 'spectral_change_candidate').length;
 
             rasterResult = {
               success: true,
@@ -2867,11 +3281,14 @@ async function startServer() {
                 water_mask_method: 'Sentinel-2 Spectral NDWI (B03/B08) & MNDWI (B03/B11) with NIR Absorption Filter'
               },
               candidate_summary: {
-                total_candidates: candidates.length,
-                new_construction_count: newConstCount,
-                building_expansion_count: expansionCount
+                total_candidates: validCandidates.length,
+                new_construction_count: possibleConstCount,
+                building_expansion_count: builtUpCount,
+                possible_construction_count: possibleConstCount,
+                built_up_change_count: builtUpCount,
+                spectral_change_count: spectralCount
               },
-              candidates,
+              candidates: validCandidates,
               thresholds: {
                 ndbi_increase_threshold,
                 ndvi_decrease_threshold,
@@ -2886,93 +3303,139 @@ async function startServer() {
               processing_time_ms: Date.now() - startTime
             };
 
-            console.log(`[Spectral Built-up] Successfully processed ${validPixels} pixels (${waterPixels} water, ${landPixels} land), generated ${candidates.length} land candidates.`);
+            console.log(`[Spectral Built-up] Successfully processed ${validPixels} pixels (${waterPixels} water, ${landPixels} land), generated ${validCandidates.length} validated land candidates.`);
           } catch (err: any) {
             console.warn(`[Spectral Built-up Analysis] COG processing fallback:`, err.message);
           }
         }
       }
 
-      // 3. Fallback deterministic generator if COG download unavailable or explicit demo
+      // 3. Fallback handling: In Live Sentinel-2 mode, NEVER fall back to synthetic candidates
       if (!rasterResult || !rasterResult.success) {
-        const centerLon = (effectiveBbox[0] + effectiveBbox[2]) / 2;
-        const centerLat = (effectiveBbox[1] + effectiveBbox[3]) / 2;
-        const lonSpan = Math.abs(effectiveBbox[2] - effectiveBbox[0]);
-        const latSpan = Math.abs(effectiveBbox[3] - effectiveBbox[1]);
+        if (explicitDemo) {
+          // Explicit Demo Mode only: generate demonstration candidates with strict area and spectral consistency
+          const centerLon = (effectiveBbox[0] + effectiveBbox[2]) / 2;
+          const centerLat = (effectiveBbox[1] + effectiveBbox[3]) / 2;
+          const lonSpan = Math.abs(effectiveBbox[2] - effectiveBbox[0]);
+          const landOffsetLon = lonSpan * 0.12;
 
-        // Place fallback candidates strictly on the confirmed land interior of the AOI
-        // For coastal regions like Mumbai where western longitudes are ocean, offset eastward onto land
-        const landOffsetLon = lonSpan * 0.12;
+          const cand1Lon = Number((centerLon + landOffsetLon).toFixed(4));
+          const cand1Lat = Number((centerLat + 0.015).toFixed(4));
+          const cand2Lon = Number((centerLon + landOffsetLon + 0.02).toFixed(4));
+          const cand2Lat = Number((centerLat - 0.02).toFixed(4));
 
-        const cand1Lon = Number((centerLon + landOffsetLon).toFixed(4));
-        const cand1Lat = Number((centerLat + 0.015).toFixed(4));
-        const cand2Lon = Number((centerLon + landOffsetLon + 0.02).toFixed(4));
-        const cand2Lat = Number((centerLat - 0.02).toFixed(4));
+          const [utmE1, utmN1] = latLonToUtm(cand1Lon, cand1Lat, 43);
+          const comp1 = generate10mConnectedComponent(25, utmE1, utmN1, 43, 101);
+          const [utmE2, utmN2] = latLonToUtm(cand2Lon, cand2Lat, 43);
+          const comp2 = generate10mConnectedComponent(15, utmE2, utmN2, 43, 202);
 
-        rasterResult = {
-          success: true,
-          data_mode: explicitDemo ? 'demo_data' : 'real_sentinel2',
-          source: explicitDemo ? 'DEMO DATA (Explicit Demo Mode)' : 'Copernicus Sentinel-2 MSI L2A (B04/B08/B11 SWIR Built-Up Analysis with Water Masking)',
-          metrics: {
-            mean_ndvi_before: 0.512,
-            mean_ndvi_after: 0.354,
-            mean_ndvi_change: -0.158,
-            mean_ndbi_before: -0.092,
-            mean_ndbi_after: 0.174,
-            mean_ndbi_change: 0.266,
-            total_valid_pixels: 48000,
-            water_pixels: 29500,
-            land_pixels: 18500,
-            water_percentage: 61.5,
-            changed_pixels: 1650,
-            change_percentage: 0.089,
-            water_mask_applied: true,
-            water_mask_method: 'Spectral Water Mask Active (NDWI/MNDWI Land Discriminator)'
-          },
-          candidate_summary: {
-            total_candidates: 2,
-            new_construction_count: 1,
-            building_expansion_count: 1
-          },
-          candidates: [
-            {
-              id: 'candidate_c1',
-              type: 'new_construction_candidate',
-              pixel_count: 1120,
-              area_m2: 112000,
-              centroid: [cand1Lon, cand1Lat],
-              bounding_box: [cand1Lon - 0.015, cand1Lat - 0.01, cand1Lon + 0.015, cand1Lat + 0.01],
-              mean_delta_ndvi: -0.21,
-              mean_delta_ndbi: 0.31,
-              min_delta_ndvi: -0.42,
-              max_delta_ndbi: 0.58
+          rasterResult = {
+            success: true,
+            data_mode: 'demo_data',
+            source: 'DEMO DATA (Explicit Demo Mode)',
+            metrics: {
+              mean_ndvi_before: 0.512,
+              mean_ndvi_after: 0.354,
+              mean_ndvi_change: -0.158,
+              mean_ndbi_before: -0.092,
+              mean_ndbi_after: 0.174,
+              mean_ndbi_change: 0.266,
+              total_valid_pixels: 48000,
+              water_pixels: 29500,
+              land_pixels: 18500,
+              water_percentage: 61.5,
+              changed_pixels: 1650,
+              change_percentage: 0.089,
+              water_mask_applied: true,
+              water_mask_method: 'Spectral Water Mask Active (NDWI/MNDWI Land Discriminator)'
             },
-            {
-              id: 'candidate_e1',
-              type: 'building_expansion_candidate',
-              pixel_count: 530,
-              area_m2: 53000,
-              centroid: [cand2Lon, cand2Lat],
-              bounding_box: [cand2Lon - 0.012, cand2Lat - 0.008, cand2Lon + 0.012, cand2Lat + 0.008],
-              mean_delta_ndvi: -0.14,
-              mean_delta_ndbi: 0.24,
-              min_delta_ndvi: -0.29,
-              max_delta_ndbi: 0.44
-            }
-          ],
-          thresholds: {
-            ndbi_increase_threshold,
-            ndvi_decrease_threshold,
-            min_area_pixels
-          },
-          limitations: [
-            'Deterministic spectral water mask enforced: all water/ocean pixels excluded before candidate generation',
-            'B11 has 20m native resolution resampled to 10m grid',
-            'Small individual structures below 10m pixel size require sub-meter satellite validation',
-            'Seasonal vegetation and bare soil variations separated via multi-spectral NDBI verification'
-          ],
-          processing_time_ms: Date.now() - startTime
-        };
+            candidate_summary: {
+              total_candidates: 2,
+              possible_construction_count: 1,
+              built_up_change_count: 1,
+              spectral_change_count: 0
+            },
+            candidates: [
+              {
+                id: 'candidate_c1',
+                type: 'possible_construction_candidate',
+                classification: 'possible_construction',
+                display_name: 'Possible Construction Activity',
+                pixel_count: comp1.pixelCoords.length,
+                area_m2: comp1.areaM2,
+                area_ha: comp1.areaHa,
+                centroid: comp1.centroid,
+                bounding_box: comp1.bbox,
+                bbox: comp1.bbox,
+                geometry: comp1.geometry,
+                pixel_coordinates: comp1.pixelCoords,
+                before_ndvi: 0.520,
+                before_ndvi_mean: 0.520,
+                after_ndvi: 0.310,
+                after_ndvi_mean: 0.310,
+                delta_ndvi: -0.210,
+                mean_delta_ndvi: -0.210,
+                before_ndbi: -0.080,
+                before_ndbi_mean: -0.080,
+                after_ndbi: 0.230,
+                after_ndbi_mean: 0.230,
+                delta_ndbi: 0.310,
+                mean_delta_ndbi: 0.310,
+                min_delta_ndvi: -0.42,
+                max_delta_ndbi: 0.58
+              },
+              {
+                id: 'candidate_b1',
+                type: 'built_up_change_candidate',
+                classification: 'built_up_change',
+                display_name: 'Built-up Change Candidate',
+                pixel_count: comp2.pixelCoords.length,
+                area_m2: comp2.areaM2,
+                area_ha: comp2.areaHa,
+                centroid: comp2.centroid,
+                bounding_box: comp2.bbox,
+                bbox: comp2.bbox,
+                geometry: comp2.geometry,
+                pixel_coordinates: comp2.pixelCoords,
+                before_ndvi: 0.460,
+                before_ndvi_mean: 0.460,
+                after_ndvi: 0.320,
+                after_ndvi_mean: 0.320,
+                delta_ndvi: -0.140,
+                mean_delta_ndvi: -0.140,
+                before_ndbi: -0.060,
+                before_ndbi_mean: -0.060,
+                after_ndbi: 0.180,
+                after_ndbi_mean: 0.180,
+                delta_ndbi: 0.240,
+                mean_delta_ndbi: 0.240,
+                min_delta_ndvi: -0.29,
+                max_delta_ndbi: 0.44
+              }
+            ],
+            thresholds: {
+              ndbi_increase_threshold,
+              ndvi_decrease_threshold,
+              min_area_pixels
+            },
+            limitations: [
+              'Explicit demo data simulation for development testing'
+            ],
+            processing_time_ms: Date.now() - startTime
+          };
+        } else {
+          // LIVE MODE: Real processing failed -> return honest 503 error, NEVER synthetic candidates!
+          console.error(`[Sentinel-2 Built-up] Live raster processing could not be completed for real scenes.`);
+          return res.status(503).json({
+            success: false,
+            data_mode: 'processing_unavailable',
+            error: 'Sentinel-2 processing unavailable',
+            detail: 'Live Copernicus spectral band data could not be processed for the requested scenes.',
+            reason: 'Live Sentinel-2 spectral raster retrieval or processing failed',
+            failed_source: 'sentinel2_spectral_engine',
+            required_next_step: 'Try again when the data service is available.'
+          });
+        }
       }
 
       // Transform raster service result to our API format

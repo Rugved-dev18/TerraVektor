@@ -223,6 +223,41 @@ export interface SemanticRetrievalResponse {
   execution_time_ms?: number;
 }
 
+// Candidate Region Definition for Built-up / Spectral Change Analysis
+export interface CandidateRegion {
+  id: string;
+  type: string;
+  classification?: string;
+  display_name?: string;
+  description?: string;
+  pixel_count: number;
+  area_m2: number;
+  area_ha: number;
+  centroid: [number, number];
+  bounding_box: [number, number, number, number];
+  bbox?: [number, number, number, number];
+  geometry: {
+    type: 'Polygon' | 'MultiPolygon';
+    coordinates: number[][][] | number[][][][];
+  };
+  pixel_coordinates?: Array<{ lon: number; lat: number }>;
+  pixelCoords?: Array<{ lon: number; lat: number }>;
+  before_ndvi: number;
+  before_ndvi_mean: number;
+  after_ndvi: number;
+  after_ndvi_mean: number;
+  delta_ndvi: number;
+  mean_delta_ndvi: number;
+  before_ndbi: number;
+  before_ndbi_mean: number;
+  after_ndbi: number;
+  after_ndbi_mean: number;
+  delta_ndbi: number;
+  mean_delta_ndbi: number;
+  min_delta_ndvi?: number;
+  max_delta_ndbi?: number;
+}
+
 // Built-up Change Analysis Types
 export interface BuiltUpAnalysisResult {
   analysis_id: string;
@@ -258,22 +293,14 @@ export interface BuiltUpAnalysisResult {
     mean_ndwi_before?: number;
     mean_ndwi_after?: number;
   };
-  candidates: Array<{
-    id: string;
-    type: string;
-    pixel_count: number;
-    area_m2: number;
-    centroid: number[];
-    bounding_box: number[];
-    mean_delta_ndvi: number;
-    mean_delta_ndbi: number;
-    min_delta_ndvi: number;
-    max_delta_ndbi: number;
-  }>;
+  candidates: CandidateRegion[];
   candidate_summary: {
     total_candidates: number;
-    new_construction_count: number;
-    building_expansion_count: number;
+    new_construction_count?: number;
+    building_expansion_count?: number;
+    possible_construction_count?: number;
+    built_up_change_count?: number;
+    spectral_change_count?: number;
   };
   thresholds: {
     ndbi_increase_threshold: number;
