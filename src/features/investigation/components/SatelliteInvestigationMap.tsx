@@ -23,6 +23,7 @@ import { BuiltUpAnalysisResult, ChangeAnalysisResult, CandidateRegion } from '..
 import { MapColorMode, MAP_COLOR_MODES } from '../../../types/mapModes';
 import { MapColorFilters, getMapColorFilterStyle } from '../../../components/MapColorFilters';
 import { MapColorModeSelector } from '../../../components/MapColorModeSelector';
+import { DEMO_BEFORE_AFTER, DEMO_IMAGERY_CONFIG } from '../config/demoImageryConfig';
 
 export interface SceneSummary {
   id: string;
@@ -79,6 +80,9 @@ export const SatelliteInvestigationMap: React.FC<SatelliteInvestigationMapProps>
   const [showCandidates, setShowCandidates] = useState<boolean>(true);
   const [showAoiBoundary, setShowAoiBoundary] = useState<boolean>(true);
   const [activeBaseLayer, setActiveBaseLayer] = useState<'satellite' | 'osm'>('satellite');
+
+  // Temporary Video Demo State (Driven by DEMO_BEFORE_AFTER feature flag)
+  const [useDemoImagery, setUseDemoImagery] = useState<boolean>(DEMO_BEFORE_AFTER);
 
   // Extract candidate regions if built-up analysis
   const builtUpAnalysis = analysis && 'classification' in analysis && analysis.classification === 'built_up_change' 
@@ -241,22 +245,35 @@ export const SatelliteInvestigationMap: React.FC<SatelliteInvestigationMapProps>
       ? L.latLngBounds([afterScene.bbox[1], afterScene.bbox[0]], [afterScene.bbox[3], afterScene.bbox[2]])
       : aoiBounds;
 
-    const beforeUrl = beforeScene.preview_url || `/api/sentinel2/preview/${beforeScene.id}`;
-    const beforeOverlay = L.imageOverlay(beforeUrl, beforeBounds, {
+    // TEMPORARY DEMO IMAGERY FOR VIDEO PRESENTATION
+    const isDemoVisualActive = DEMO_BEFORE_AFTER && useDemoImagery;
+
+    const effectiveBeforeUrl = isDemoVisualActive
+      ? DEMO_IMAGERY_CONFIG.beforeUrl
+      : (beforeScene.preview_url || `/api/sentinel2/preview/${beforeScene.id}`);
+
+    const effectiveAfterUrl = isDemoVisualActive
+      ? DEMO_IMAGERY_CONFIG.afterUrl
+      : (afterScene.preview_url || `/api/sentinel2/preview/${afterScene.id}`);
+
+    // Pin demo imagery to AOI bounds for unified geometric comparison
+    const effectiveBeforeBounds = isDemoVisualActive ? aoiBounds : beforeBounds;
+    const effectiveAfterBounds = isDemoVisualActive ? aoiBounds : afterBounds;
+
+    const beforeOverlay = L.imageOverlay(effectiveBeforeUrl, effectiveBeforeBounds, {
       pane: 'beforePane',
       opacity: 0.95
     }).addTo(map);
     beforeOverlayRef.current = beforeOverlay;
 
-    const afterUrl = afterScene.preview_url || `/api/sentinel2/preview/${afterScene.id}`;
-    const afterOverlay = L.imageOverlay(afterUrl, afterBounds, {
+    const afterOverlay = L.imageOverlay(effectiveAfterUrl, effectiveAfterBounds, {
       pane: 'afterPane',
       opacity: 0.95
     }).addTo(map);
     afterOverlayRef.current = afterOverlay;
 
     map.fitBounds(aoiBounds.pad(0.1), { duration: 0.6 });
-  }, [beforeScene, afterScene, aoiBbox, showAoiBoundary]);
+  }, [beforeScene, afterScene, aoiBbox, showAoiBoundary, useDemoImagery]);
 
   // Load Built-Up Change Mask Overlay
   useEffect(() => {
@@ -702,8 +719,35 @@ export const SatelliteInvestigationMap: React.FC<SatelliteInvestigationMapProps>
               <Layers className="w-3.5 h-3.5 text-slate-500" />
               <span className="hidden md:inline font-mono">{activeBaseLayer === 'satellite' ? 'Sat' : 'OSM'}</span>
             </button>
+
+            {/* Temporary Demo Video Mode Toggle (Active only when DEMO_BEFORE_AFTER flag is true) */}
+            {DEMO_BEFORE_AFTER && (
+              <button
+                type="button"
+                onClick={() => setUseDemoImagery(!useDemoImagery)}
+                className={`flex items-center space-x-1.5 px-2.5 py-1 rounded text-xs font-semibold transition-colors ${
+                  useDemoImagery
+                    ? 'bg-amber-100 text-amber-900 border border-amber-300 shadow-2xs'
+                    : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
+                }`}
+                title="Toggle between High-Clarity Demo Imagery (for video presentation) and Real Live Sentinel-2"
+              >
+                <Sparkles className={`w-3.5 h-3.5 ${useDemoImagery ? 'text-amber-600' : 'text-slate-400'}`} />
+                <span className="hidden sm:inline">{useDemoImagery ? 'Demo Visual' : 'Live S2'}</span>
+              </button>
+            )}
           </div>
         </div>
+
+        {/* TEMPORARY VIDEO DEMO BADGE (Active when DEMO_BEFORE_AFTER is enabled) */}
+        {DEMO_BEFORE_AFTER && useDemoImagery && (
+          <div className="absolute top-3 left-1/2 -translate-x-1/2 z-[1050] pointer-events-none">
+            <div className="bg-amber-500 text-slate-950 text-[10px] font-mono font-bold tracking-wider px-2.5 py-1 rounded shadow-md border border-amber-300 flex items-center gap-1.5 uppercase">
+              <span className="w-1.5 h-1.5 rounded-full bg-slate-950 animate-pulse" />
+              <span>{DEMO_IMAGERY_CONFIG.badgeText}</span>
+            </div>
+          </div>
+        )}
 
         {/* 4. FLOATING MAP NAVIGATION TOOLS (Right side) */}
         <div className="absolute top-3 right-3 z-[1050] flex flex-col gap-1.5 pointer-events-auto">
@@ -759,7 +803,9 @@ export const SatelliteInvestigationMap: React.FC<SatelliteInvestigationMapProps>
           >
             <span className="w-2 h-2 rounded-full bg-emerald-500 shrink-0" />
             <div className="text-left">
-              <div className="text-[10px] text-slate-300 font-sans font-semibold">BEFORE BASELINE</div>
+              <div className="text-[10px] text-slate-300 font-sans font-semibold">
+                {DEMO_BEFORE_AFTER && useDemoImagery ? 'DEMO BEFORE (BASELINE)' : 'BEFORE BASELINE'}
+              </div>
               <div className="text-[11px] font-bold text-white">
                 {format(new Date(beforeScene.acquisition_date), 'yyyy-MM-dd')}
               </div>
@@ -778,7 +824,9 @@ export const SatelliteInvestigationMap: React.FC<SatelliteInvestigationMapProps>
             title="Click to view 100% After Scene"
           >
             <div className="text-right">
-              <div className="text-[10px] text-slate-300 font-sans font-semibold">AFTER MONITORING</div>
+              <div className="text-[10px] text-slate-300 font-sans font-semibold">
+                {DEMO_BEFORE_AFTER && useDemoImagery ? 'DEMO AFTER (CONSTRUCTION)' : 'AFTER MONITORING'}
+              </div>
               <div className="text-[11px] font-bold text-white">
                 {format(new Date(afterScene.acquisition_date), 'yyyy-MM-dd')}
               </div>
