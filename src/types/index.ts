@@ -286,3 +286,35 @@ export interface ExtendedParsedQuery extends ParsedQuery {
   status?: 'valid' | 'incomplete' | 'ambiguous' | 'unsupported';
   missingFields?: string[];
 }
+
+// Dynamic Geographic Location Resolution Types
+export interface ResolvedLocation {
+  name: string;
+  displayName: string;
+  country?: string;
+  countryCode?: string;
+  state?: string;
+  bbox: [number, number, number, number]; // [minLon, minLat, maxLon, maxLat]
+  center: {
+    lat: number;
+    lon: number;
+  };
+  source: string;
+  confidence: 'high' | 'medium' | 'low';
+  placeType?: string;
+  importance?: number;
+}
+
+export type LocationResolutionStatus = 'resolved' | 'ambiguous' | 'unresolved';
+
+export interface LocationResolutionResponse {
+  status: LocationResolutionStatus;
+  query: string;
+  location?: ResolvedLocation;
+  candidates?: ResolvedLocation[];
+  locationText?: string;
+  message?: string;
+  cached?: boolean;
+  execution_time_ms?: number;
+}
+

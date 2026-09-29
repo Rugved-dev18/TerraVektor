@@ -10,7 +10,8 @@ import {
   ProvenanceData,
   SemanticRetrievalRequest,
   SemanticRetrievalResponse,
-  BuiltUpAnalysisResult
+  BuiltUpAnalysisResult,
+  LocationResolutionResponse
 } from '../types';
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || '';
@@ -202,6 +203,14 @@ export const analyzeBuiltUpChanges = async (
     ndbi_increase_threshold: ndbiIncreaseThreshold,
     ndvi_decrease_threshold: ndviDecreaseThreshold,
     min_area_pixels: minAreaPixels
+  });
+  return response.data;
+};
+
+// Dynamic Geographic Location Resolution
+export const resolveLocationQuery = async (query: string): Promise<LocationResolutionResponse> => {
+  const response = await api.get('/api/location/resolve', {
+    params: { q: query }
   });
   return response.data;
 };

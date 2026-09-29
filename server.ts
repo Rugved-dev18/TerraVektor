@@ -6,6 +6,7 @@ import { fileURLToPath } from 'url';
 import { Buffer } from 'buffer';
 import jpeg from 'jpeg-js';
 import * as GeoTIFF from 'geotiff';
+import { resolveGeographicLocation } from './src/features/semantic-search/parser/locationResolver';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -204,9 +205,7 @@ scenes.forEach(scene => {
 
 async function startServer() {
   const app = express();
-  const portArgIndex = process.argv.indexOf('--port');
-  const cliPort = portArgIndex !== -1 && process.argv[portArgIndex + 1] ? parseInt(process.argv[portArgIndex + 1], 10) : undefined;
-  const PORT = cliPort || (process.env.PORT && process.env.PORT !== '8080' ? parseInt(process.env.PORT, 10) : 3000);
+  const PORT = 3000;
 
   app.use(cors());
   app.use(express.json({ limit: '50mb' }));
@@ -292,6 +291,51 @@ async function startServer() {
         provenance: 'active'
       }
     });
+  });
+
+  // 1b. Dynamic Geographic Location Resolution
+  app.get('/api/location/resolve', async (req: Request, res: Response) => {
+    const rawQuery = (req.query.q as string) || (req.query.query as string) || (req.query.location as string);
+    if (!rawQuery || typeof rawQuery !== 'string' || !rawQuery.trim()) {
+      return res.status(400).json({
+        status: 'unresolved',
+        message: "Query parameter 'q' or 'query' is required."
+      });
+    }
+
+    try {
+      const result = await resolveGeographicLocation(rawQuery);
+      return res.json(result);
+    } catch (err: any) {
+      console.error('[API /api/location/resolve] Error:', err);
+      return res.status(500).json({
+        status: 'unresolved',
+        locationText: rawQuery,
+        message: `Failed to resolve location: ${err.message || 'Internal error'}`
+      });
+    }
+  });
+
+  app.post('/api/location/resolve', async (req: Request, res: Response) => {
+    const rawQuery = (req.body?.q as string) || (req.body?.query as string) || (req.body?.location as string);
+    if (!rawQuery || typeof rawQuery !== 'string' || !rawQuery.trim()) {
+      return res.status(400).json({
+        status: 'unresolved',
+        message: "Request body property 'q' or 'query' is required."
+      });
+    }
+
+    try {
+      const result = await resolveGeographicLocation(rawQuery);
+      return res.json(result);
+    } catch (err: any) {
+      console.error('[API /api/location/resolve POST] Error:', err);
+      return res.status(500).json({
+        status: 'unresolved',
+        locationText: rawQuery,
+        message: `Failed to resolve location: ${err.message || 'Internal error'}`
+      });
+    }
   });
 
   // 2. Scenes
