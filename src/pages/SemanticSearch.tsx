@@ -369,6 +369,15 @@ export const SemanticSearch: React.FC = () => {
                     </span>
                     <span className="text-slate-300">&bull;</span>
                     <span className="text-teal-800 font-semibold">10m BOA Ground Resolution</span>
+                    {(result.analysis as any).metrics?.water_mask_applied && (
+                      <>
+                        <span className="text-slate-300">&bull;</span>
+                        <span className="text-sky-700 font-semibold flex items-center gap-1">
+                          <span className="w-1.5 h-1.5 rounded-full bg-sky-500 inline-block" />
+                          Water Mask Active ({(result.analysis as any).metrics?.water_percentage || 0}% Aquatic Excluded)
+                        </span>
+                      </>
+                    )}
                   </div>
 
                   <div className="flex items-center space-x-2 text-[11px] font-mono">

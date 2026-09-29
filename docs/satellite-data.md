@@ -44,6 +44,16 @@ TerraVektor identifies new construction by looking for simultaneous:
 1. Significant increase in built-up signature: $\Delta\text{NDBI} = \text{NDBI}_{\text{after}} - \text{NDBI}_{\text{before}} > \tau_{\text{NDBI}}$
 2. Loss of previous vegetation canopy or bare land: $\Delta\text{NDVI} = \text{NDVI}_{\text{after}} - \text{NDVI}_{\text{before}} < -\tau_{\text{NDVI}}$
 
+### 4.4 Normalized Difference Water Index (NDWI & MNDWI) & Land/Water Masking
+To prevent aquatic reflections, wave glint, sediment shifts, and coastal dynamics from generating false-positive construction candidates over oceans, lakes, and rivers, TerraVektor enforces a deterministic multi-spectral water exclusion mask:
+
+$$\text{NDWI} = \frac{\text{B03} - \text{B08}}{\text{B03} + \text{B08}}$$
+$$\text{MNDWI} = \frac{\text{B03} - \text{B11}}{\text{B03} + \text{B11}}$$
+
+- **Water Discrimination**: Pixels exhibit $\text{NDWI} > 0$ or $\text{MNDWI} > 0$, coupled with strong absorption in near-infrared ($\text{B08} < 0.10$ reflectance).
+- **Multi-Temporal Water Exclusion**: If a pixel is identified as water in either the baseline or monitoring acquisition, it is strictly excluded from candidate clustering.
+- **Land-Only Analysis Space**: Built-up index differencing ($\Delta\text{NDBI}$) is evaluated exclusively over verified land surface pixels.
+
 ## 5. Important Scientific & Data Limitations
 
 1. **Cloud & Shadow Contamination**: Clouds yield high reflectance across visible and infrared channels, while cloud shadows mimic deep water or wet soil. Scenes should be filtered to $\le 20\%$ cloud cover.

@@ -250,6 +250,13 @@ export interface BuiltUpAnalysisResult {
     total_valid_pixels: number;
     changed_pixels: number;
     change_percentage: number;
+    water_pixels?: number;
+    land_pixels?: number;
+    water_percentage?: number;
+    water_mask_applied?: boolean;
+    water_mask_method?: string;
+    mean_ndwi_before?: number;
+    mean_ndwi_after?: number;
   };
   candidates: Array<{
     id: string;

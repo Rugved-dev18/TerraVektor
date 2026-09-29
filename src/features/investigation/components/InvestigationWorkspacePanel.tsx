@@ -316,6 +316,14 @@ export const InvestigationWorkspacePanel: React.FC<InvestigationWorkspacePanelPr
               </div>
               <div className="space-y-1.5 text-xs">
                 <div className="p-1.5 rounded bg-white border border-slate-200 text-slate-700 font-mono text-[11px] flex items-start space-x-2">
+                  <span className="text-sky-800 font-bold shrink-0">00</span>
+                  <div>
+                    <span className="font-sans font-semibold text-slate-900">Confirmed land surface</span>
+                    <div className="text-[10px] text-sky-700">Spectral water mask (NDWI &lt; 0, MNDWI &lt; 0) verified; aquatic/ocean false alarms excluded</div>
+                  </div>
+                </div>
+
+                <div className="p-1.5 rounded bg-white border border-slate-200 text-slate-700 font-mono text-[11px] flex items-start space-x-2">
                   <span className="text-teal-800 font-bold shrink-0">01</span>
                   <div>
                     <span className="font-sans font-semibold text-slate-900">Vegetation signal changed</span>
