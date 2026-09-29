@@ -2,18 +2,17 @@
  * Main query parser - combines all parsers to produce structured query plan
  */
 
-import { resolveLocation } from './locationResolver';
+import { resolveLocation, resolveGeographicLocation, getSupportedLocations } from './locationResolver';
 import { parseTemporal } from './temporalParser';
 import { matchIntent } from './intentMatcher';
 import { QueryPlan, QueryStatus, InvestigationIntent } from '../types/queryPlan';
-import { getSupportedLocations } from './locationResolver';
 
 export function parseQuery(query: string): QueryPlan {
   const originalQuery = query.trim();
   const normalizedQuery = originalQuery.toLowerCase().trim();
 
   // Parse each component
-  const locationResult = resolveLocation(normalizedQuery);
+  const locationResult = resolveLocation(originalQuery);
   const temporalResult = parseTemporal(normalizedQuery);
   const intentResult = matchIntent(normalizedQuery);
 
@@ -64,6 +63,8 @@ export function parseQuery(query: string): QueryPlan {
     aoi: locationResult.aoi,
     startDate: temporalResult.startDate,
     endDate: temporalResult.endDate,
+    start_date: temporalResult.startDate,
+    end_date: temporalResult.endDate,
     direction: intentResult.direction,
     confidence,
     missingFields,
@@ -74,6 +75,59 @@ export function parseQuery(query: string): QueryPlan {
   };
 
   return queryPlan;
+}
+
+export async function parseQueryAsync(query: string): Promise<QueryPlan> {
+  const plan = parseQuery(query);
+
+  // If already unsupported, return immediately
+  if (plan.status === 'unsupported') {
+    return plan;
+  }
+
+  // If a location candidate or alias is identified, dynamically resolve it
+  if (plan.location) {
+    try {
+      const geoResult = await resolveGeographicLocation(plan.location);
+      if (geoResult.status === 'resolved' && geoResult.location) {
+        plan.aoi = geoResult.location.bbox;
+        plan.resolvedLocation = geoResult.location;
+        plan.locationDetails = geoResult.location;
+        plan.location = geoResult.location.name;
+        plan.locationStatus = 'resolved';
+        plan.missingFields = plan.missingFields.filter(f => f !== 'location');
+      } else if (geoResult.status === 'ambiguous') {
+        plan.aoi = null;
+        plan.locationStatus = 'ambiguous';
+        plan.locationCandidates = geoResult.candidates || [];
+        if (!plan.ambiguousFields.includes('location_selection')) {
+          plan.ambiguousFields.push('location_selection');
+        }
+      } else {
+        // Unresolved
+        plan.aoi = null;
+        plan.locationStatus = 'unresolved';
+        if (!plan.missingFields.includes('location')) {
+          plan.missingFields.push('location');
+        }
+      }
+    } catch (err) {
+      console.error('[parseQueryAsync] Error resolving location:', err);
+    }
+  }
+
+  // Re-evaluate overall status
+  if (plan.unsupportedTerms.length > 0) {
+    plan.status = 'unsupported';
+  } else if (plan.missingFields.length > 0) {
+    plan.status = 'incomplete';
+  } else if (plan.ambiguousFields.length > 0) {
+    plan.status = 'ambiguous';
+  } else {
+    plan.status = 'valid';
+  }
+
+  return plan;
 }
 
 export function generateClarification(queryPlan: QueryPlan): {
@@ -120,7 +174,7 @@ export function generateClarification(queryPlan: QueryPlan): {
     }
   } else if (queryPlan.startDate && queryPlan.endDate && !queryPlan.intent) {
     // Has dates, missing intent
-    const location = queryPlan.location || 'Pune';
+    const location = queryPlan.location || 'Nashik';
     exampleQueries.push(
       `Find new construction around ${location} between ${formatDate(queryPlan.startDate)} and ${formatDate(queryPlan.endDate)}`,
       `Show vegetation change around ${location} from ${formatDate(queryPlan.startDate)} to ${formatDate(queryPlan.endDate)}`
@@ -128,9 +182,9 @@ export function generateClarification(queryPlan: QueryPlan): {
   } else {
     // General examples
     exampleQueries.push(
-      'Find new construction around Pune between May 2024 and May 2026',
-      'Show vegetation loss around Mumbai from January 2024 to January 2026',
-      'Find areas around Bengaluru with vegetation increase between March 2024 and March 2026'
+      'Find new construction around Nashik between May 2024 and May 2026',
+      'Show vegetation loss near Nagpur from January 2024 to January 2026',
+      'Show urban expansion around Kolhapur between March 2024 and March 2026'
     );
   }
 
@@ -139,7 +193,9 @@ export function generateClarification(queryPlan: QueryPlan): {
     if (field === 'location') {
       return {
         field: 'Location',
-        description: 'Specify a geographic area to investigate',
+        description: queryPlan.locationStatus === 'unresolved'
+          ? `Location "${queryPlan.location}" could not be resolved. Try adding a state or country.`
+          : 'Specify a geographic area to investigate',
         suggestions: getSupportedLocations().map(loc => `around ${loc}`)
       };
     }
@@ -181,6 +237,15 @@ export function generateClarification(queryPlan: QueryPlan): {
         ]
       };
     }
+    if (field === 'location_selection' && queryPlan.locationCandidates) {
+      return {
+        field: 'Location Clarification',
+        options: queryPlan.locationCandidates.map(c => ({
+          label: c.displayName,
+          value: c
+        }))
+      };
+    }
     return {
       field,
       options: []
@@ -194,6 +259,12 @@ export function generateClarification(queryPlan: QueryPlan): {
   if (queryPlan.status === 'unsupported') {
     title = 'UNSUPPORTED INVESTIGATION';
     description = `This workspace currently supports built-up change, vegetation change, and temporal satellite comparison. The following terms are not supported: ${queryPlan.unsupportedTerms.join(', ')}.`;
+  } else if (queryPlan.locationStatus === 'unresolved') {
+    title = 'LOCATION NOT FOUND';
+    description = `Location "${queryPlan.location}" could not be resolved. Try adding a state or country.`;
+  } else if (queryPlan.locationStatus === 'ambiguous') {
+    title = 'LOCATION NEEDS CLARIFICATION';
+    description = 'Multiple distinct geographic locations matched this query. Please select your desired area of interest.';
   } else if (queryPlan.status === 'incomplete') {
     title = 'INCOMPLETE QUERY';
     description = 'Change analysis requires all parameters to be specified.';
@@ -227,12 +298,20 @@ export function queryPlanToLegacy(queryPlan: QueryPlan): any {
   return {
     location: queryPlan.location || '',
     aoi: queryPlan.aoi,
+    resolvedLocation: queryPlan.resolvedLocation || queryPlan.locationDetails,
+    locationDetails: queryPlan.locationDetails || queryPlan.resolvedLocation,
+    locationStatus: queryPlan.locationStatus,
+    locationCandidates: queryPlan.locationCandidates,
     startDate: queryPlan.startDate,
     endDate: queryPlan.endDate,
+    start_date: queryPlan.startDate,
+    end_date: queryPlan.endDate,
     phenomenon: queryPlan.intent === 'vegetation_change' ? 'vegetation' : 
                 queryPlan.intent === 'built_up_change' ? 'built_up' : 'general',
     direction: queryPlan.direction,
     changeType: queryPlan.intent === 'built_up_change' ? 'built_up' : null,
+    status: queryPlan.status,
+    missingFields: queryPlan.missingFields,
     error: queryPlan.status !== 'valid' ? generateClarification(queryPlan).description : undefined
   };
 }

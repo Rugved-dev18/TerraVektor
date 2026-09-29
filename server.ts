@@ -6,7 +6,7 @@ import { fileURLToPath } from 'url';
 import { Buffer } from 'buffer';
 import jpeg from 'jpeg-js';
 import * as GeoTIFF from 'geotiff';
-import { resolveGeographicLocation } from './src/features/semantic-search/parser/locationResolver';
+import { resolveGeographicLocation, extractLocationName } from './src/features/semantic-search/parser/locationResolver';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -1894,7 +1894,7 @@ async function startServer() {
     'climate', 'politics', 'news', 'sports', 'game', 'games'
   ];
 
-  function parseNaturalLanguageQuery(query: string): ParsedQuery {
+  async function parseNaturalLanguageQuery(query: string): Promise<ParsedQuery> {
     const lowerQuery = query.toLowerCase().trim();
     
     const result: ParsedQuery = {
@@ -1928,54 +1928,44 @@ async function startServer() {
       }
     }
 
-    // Extract location with flexible matching
-    let foundLocation = '';
-    let searchQuery = lowerQuery;
-
-    // Remove location prefixes
-    for (const prefix of LOCATION_PREFIXES) {
-      const prefixPattern = new RegExp(`\\b${prefix}\\s+`, 'i');
-      searchQuery = searchQuery.replace(prefixPattern, '');
-    }
-
-    // Try exact word match for location aliases
-    for (const [alias, canonical] of Object.entries(LOCATION_ALIASES)) {
-      const pattern = new RegExp(`\\b${alias}\\b`, 'i');
-      if (pattern.test(lowerQuery)) {
-        foundLocation = canonical;
-        break;
-      }
-    }
-
-    // Try location with variations (e.g., "Pune region", "Pune area")
-    if (!foundLocation) {
-      for (const [alias, canonical] of Object.entries(LOCATION_ALIASES)) {
-        const patterns = [
-          new RegExp(`\\b${alias}\\s+region\\b`, 'i'),
-          new RegExp(`\\b${alias}\\s+area\\b`, 'i'),
-          new RegExp(`\\b${alias}\\s+city\\b`, 'i'),
-          new RegExp(`\\b${alias}\\s+zone\\b`, 'i')
-        ];
-
-        for (const pattern of patterns) {
-          if (pattern.test(lowerQuery)) {
-            foundLocation = canonical;
-            break;
-          }
-        }
-        if (foundLocation) break;
-      }
-    }
+    // Extract location dynamically
+    const foundLocation = extractLocationName(query);
 
     if (!foundLocation) {
-      result.error = 'Location not recognized. Please specify one of: Pune, Mumbai, Bengaluru, Delhi, Chennai, or Jaipur.';
+      result.error = 'Location not recognized. Please specify a geographic area to investigate.';
       result.status = 'incomplete';
       result.missingFields = ['location'];
+      result.locationStatus = 'unresolved';
       return result;
     }
 
-    result.location = foundLocation.charAt(0).toUpperCase() + foundLocation.slice(1);
-    result.aoi = AOI_PRESETS[foundLocation];
+    // Resolve geographic location dynamically via Part 1 resolver
+    const geoRes = await resolveGeographicLocation(foundLocation);
+    if (geoRes.status === 'resolved' && geoRes.location) {
+      result.location = geoRes.location.name;
+      result.aoi = geoRes.location.bbox;
+      result.resolvedLocation = geoRes.location;
+      result.locationDetails = geoRes.location;
+      result.locationStatus = 'resolved';
+    } else if (geoRes.status === 'ambiguous') {
+      result.location = foundLocation;
+      result.aoi = null;
+      result.locationStatus = 'ambiguous';
+      result.locationCandidates = geoRes.candidates || [];
+      result.status = 'ambiguous';
+      result.missingFields = ['location_clarification'];
+      result.error = 'Location needs clarification. Multiple matching locations found.';
+      return result;
+    } else {
+      // Unresolved
+      result.location = foundLocation;
+      result.aoi = null;
+      result.locationStatus = 'unresolved';
+      result.status = 'incomplete';
+      result.missingFields = ['location'];
+      result.error = `Location "${foundLocation}" not found. Try adding a state or country.`;
+      return result;
+    }
 
     // Extract dates with multiple pattern support
     const monthNames = ['january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december'];
@@ -2193,28 +2183,32 @@ async function startServer() {
       const data = await response.json();
       
       if (!data.results || data.results.length === 0) {
-        const centerLon = (aoi[0] + aoi[2]) / 2;
-        const centerLat = (aoi[1] + aoi[3]) / 2;
-        const tile = '43QCA';
-        const cleanDate = targetDate.replace(/-/g, '');
-        const pId = `s2-l2a-${tile}-${cleanDate}`;
-        return {
-          id: pId,
-          name: `S2A_MSIL2A_${cleanDate}T052651_N0510_R105_T${tile}_${cleanDate}.SAFE`,
-          product_type: 'S2MSI2A',
-          acquisition_date: `${targetDate}T05:26:51.024Z`,
-          cloud_cover: 6.5,
-          platform: 'Sentinel-2A',
-          tile_id: tile,
-          bbox: aoi,
-          center: [centerLon, centerLat],
-          data_mode: 'cached',
-          thumbnail_url: `/api/sentinel2/preview/${pId}`,
-          preview_url: `/api/sentinel2/preview/${pId}`,
-          download_url: `https://catalogue.dataspace.copernicus.eu/odata/v1/Products(${pId})/$value`,
-          cdse_browser_url: `https://browser.dataspace.copernicus.eu/?zoom=11&lat=${centerLat.toFixed(4)}&lng=${centerLon.toFixed(4)}`,
-          origin: 'ESA'
-        };
+        if (isDemo) {
+          const centerLon = (aoi[0] + aoi[2]) / 2;
+          const centerLat = (aoi[1] + aoi[3]) / 2;
+          const tile = '43QCA';
+          const cleanDate = targetDate.replace(/-/g, '');
+          const pId = `s2-l2a-${tile}-${cleanDate}`;
+          return {
+            id: pId,
+            name: `S2A_MSIL2A_${cleanDate}T052651_N0510_R105_T${tile}_${cleanDate}.SAFE`,
+            product_type: 'S2MSI2A',
+            acquisition_date: `${targetDate}T05:26:51.024Z`,
+            cloud_cover: 6.5,
+            platform: 'Sentinel-2A',
+            tile_id: tile,
+            bbox: aoi,
+            center: [centerLon, centerLat],
+            data_mode: 'demo_data',
+            thumbnail_url: `/api/sentinel2/preview/${pId}`,
+            preview_url: `/api/sentinel2/preview/${pId}`,
+            download_url: `https://catalogue.dataspace.copernicus.eu/odata/v1/Products(${pId})/$value`,
+            cdse_browser_url: `https://browser.dataspace.copernicus.eu/?zoom=11&lat=${centerLat.toFixed(4)}&lng=${centerLon.toFixed(4)}`,
+            origin: 'ESA'
+          };
+        }
+        // Real data mode: honest no-data, do not fabricate scenes
+        return null;
       }
 
       // Select the scene closest to target date with lowest cloud cover
@@ -2253,8 +2247,8 @@ async function startServer() {
         });
       }
 
-      // Parse the natural language query
-      const parsedQuery = parseNaturalLanguageQuery(query);
+      // Parse the natural language query dynamically
+      const parsedQuery = await parseNaturalLanguageQuery(query);
 
       if (parsedQuery.error) {
         return res.json({
@@ -2282,16 +2276,16 @@ async function startServer() {
       const beforeScene = await findBestScene(parsedQuery.aoi, parsedQuery.startDate, 30, explicitDemo);
 
       if (!beforeScene) {
-        return res.status(503).json({
+        return res.json({
           success: false,
           parsedQuery,
           beforeScene: null,
           afterScene: null,
           analysis: null,
-          data_mode: explicitDemo ? 'demo_data' : 'upstream_unavailable',
-          error: 'Sentinel-2 processing unavailable',
-          detail: 'Live Copernicus data could not be retrieved. No suitable Before scene found.',
-          message: 'Sentinel-2 processing unavailable: Live Copernicus data could not be retrieved. Try again when the data service is available.'
+          data_mode: explicitDemo ? 'demo_data' : 'no_scenes_found',
+          error: 'No suitable Sentinel-2 scenes were found for this AOI and date range.',
+          message: 'No suitable Sentinel-2 scenes were found for this AOI and date range.',
+          detail: 'No suitable Sentinel-2 scenes were found for this AOI and date range on Copernicus CDSE.'
         });
       }
 
@@ -2299,16 +2293,16 @@ async function startServer() {
       const afterScene = await findBestScene(parsedQuery.aoi, parsedQuery.endDate, 30, explicitDemo);
 
       if (!afterScene) {
-        return res.status(503).json({
+        return res.json({
           success: false,
           parsedQuery,
           beforeScene,
           afterScene: null,
           analysis: null,
-          data_mode: explicitDemo ? 'demo_data' : 'upstream_unavailable',
-          error: 'Sentinel-2 processing unavailable',
-          detail: 'Live Copernicus data could not be retrieved. No suitable After scene found.',
-          message: 'Sentinel-2 processing unavailable: Live Copernicus data could not be retrieved. Try again when the data service is available.'
+          data_mode: explicitDemo ? 'demo_data' : 'no_scenes_found',
+          error: 'No suitable Sentinel-2 scenes were found for this AOI and date range.',
+          message: 'No suitable Sentinel-2 scenes were found for this AOI and date range.',
+          detail: 'No suitable Sentinel-2 scenes were found for this AOI and date range on Copernicus CDSE.'
         });
       }
 

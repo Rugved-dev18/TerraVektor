@@ -190,12 +190,20 @@ export interface ChangeAnalysisResult {
 export interface ParsedQuery {
   location: string;
   aoi: [number, number, number, number] | null;
+  resolvedLocation?: ResolvedLocation | null;
+  locationDetails?: ResolvedLocation | null;
+  locationStatus?: 'resolved' | 'ambiguous' | 'unresolved';
+  locationCandidates?: ResolvedLocation[];
   startDate: string | null;
   endDate: string | null;
+  start_date?: string | null;
+  end_date?: string | null;
   phenomenon: string;
   direction: 'increase' | 'decrease' | 'change' | null;
   changeType?: 'vegetation' | 'built_up' | 'construction' | 'expansion' | null;
   error?: string;
+  status?: string;
+  missingFields?: string[];
 }
 
 export interface SemanticRetrievalRequest {

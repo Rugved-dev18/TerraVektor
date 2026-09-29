@@ -2,9 +2,10 @@
  * Parser module exports
  */
 
-export { parseQuery, generateClarification, queryPlanToLegacy } from './queryParser';
+export { parseQuery, parseQueryAsync, generateClarification, queryPlanToLegacy } from './queryParser';
 export {
   resolveLocation,
+  extractLocationName,
   getSupportedLocations,
   resolveGeographicLocation,
   isValidCoordinate,

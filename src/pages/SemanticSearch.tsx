@@ -24,11 +24,11 @@ import { SatelliteInvestigationMap } from '../features/investigation/components/
 import { InvestigationWorkspacePanel } from '../features/investigation/components/InvestigationWorkspacePanel';
 import { InvestigationRibbon } from '../features/investigation/components/InvestigationRibbon';
 import { QueryClarification } from '../features/semantic-search/components/QueryClarification';
-import { parseQuery, type QueryPlan } from '../features/semantic-search/parser';
+import { parseQuery, parseQueryAsync, type QueryPlan } from '../features/semantic-search/parser';
 import { format } from 'date-fns';
 
 export const SemanticSearch: React.FC = () => {
-  const [query, setQuery] = useState('Find new construction and built-up expansion around Pune between May 2024 and October 2024');
+  const [query, setQuery] = useState('Show new construction around Nashik between May 2024 and May 2026');
   const [isLoading, setIsLoading] = useState(false);
   const [hasSearched, setHasSearched] = useState(false);
   const [result, setResult] = useState<SemanticRetrievalResponse | null>(null);
@@ -37,12 +37,12 @@ export const SemanticSearch: React.FC = () => {
   const [queryPlan, setQueryPlan] = useState<QueryPlan | null>(null);
 
   const sampleQueries = [
+    { label: 'Nashik Construction', text: 'Show new construction around Nashik between May 2024 and May 2026' },
+    { label: 'Nagpur Vegetation', text: 'Find vegetation loss near Nagpur from January 2024 to January 2026' },
+    { label: 'Kolhapur Growth', text: 'Show urban expansion around Kolhapur between March 2024 and March 2026' },
     { label: 'Pune Urban Growth', text: 'Find new construction and built-up expansion around Pune between May 2024 and October 2024' },
     { label: 'Mumbai Coastal', text: 'Show vegetation and built-up change around Mumbai from January 2024 to May 2024' },
-    { label: 'Bengaluru Tech Corridor', text: 'Find areas around Bengaluru with new construction between March 2024 and June 2024' },
-    { label: 'Hyderabad Expansion', text: 'Show urban expansion around Hyderabad between February 2024 and May 2024' },
-    { label: 'Vegetation Loss', text: 'Show vegetation loss around Mumbai from January 2024 to January 2026' },
-    { label: 'Vegetation Growth', text: 'Find areas around Bengaluru with vegetation increase between March 2024 and March 2026' }
+    { label: 'Bengaluru Corridor', text: 'Find areas around Bengaluru with vegetation increase between March 2024 and March 2026' }
   ];
 
   // Auto-run initial query on mount so cockpit immediately displays real data
@@ -60,6 +60,11 @@ export const SemanticSearch: React.FC = () => {
     // Parse query locally for immediate feedback
     const localPlan = parseQuery(searchQuery);
     setQueryPlan(localPlan);
+
+    // Asynchronously resolve geographic location for immediate status
+    parseQueryAsync(searchQuery).then(resolvedPlan => {
+      setQueryPlan(resolvedPlan);
+    });
     
     try {
       const response = await semanticRetrieval({
@@ -67,6 +72,21 @@ export const SemanticSearch: React.FC = () => {
       });
       setResult(response);
       
+      if (response.parsedQuery) {
+        // Sync local queryPlan with the authoritative backend parsed query
+        setQueryPlan(prev => ({
+          ...(prev || localPlan),
+          aoi: response.parsedQuery.aoi,
+          location: response.parsedQuery.location,
+          resolvedLocation: response.parsedQuery.resolvedLocation || response.parsedQuery.locationDetails,
+          locationDetails: response.parsedQuery.locationDetails || response.parsedQuery.resolvedLocation,
+          locationStatus: response.parsedQuery.locationStatus,
+          locationCandidates: response.parsedQuery.locationCandidates,
+          startDate: response.parsedQuery.startDate,
+          endDate: response.parsedQuery.endDate
+        }));
+      }
+
       if (!response.success) {
         setErrorMessage(response.detail || response.message || response.error || 'Search failed');
       } else if (response.analysis && 'candidates' in response.analysis && (response.analysis as any).candidates?.length > 0) {
@@ -86,10 +106,22 @@ export const SemanticSearch: React.FC = () => {
     handleSearch(exampleQuery);
   };
 
+  const handleSelectLocationCandidate = (cand: any) => {
+    const oldLoc = queryPlan?.location || result?.parsedQuery?.location || '';
+    let newQuery = query;
+    if (oldLoc && new RegExp(`\\b${oldLoc}\\b`, 'i').test(query)) {
+      newQuery = query.replace(new RegExp(`\\b${oldLoc}\\b`, 'i'), cand.displayName);
+    } else {
+      newQuery = `${query} in ${cand.displayName}`;
+    }
+    setQuery(newQuery);
+    handleSearch(newQuery);
+  };
+
   const handleSelectIntent = (intent: string) => {
     // Reconstruct query with selected intent
     let newQuery = query;
-    const location = queryPlan?.location || 'Pune';
+    const location = queryPlan?.location || 'Nashik';
     
     if (intent === 'built_up_change') {
       newQuery = `Find new construction around ${location} between May 2024 and October 2024`;
@@ -108,6 +140,26 @@ export const SemanticSearch: React.FC = () => {
     : [];
 
   const selectedCandidate = candidateList.find((c: any) => c.id === selectedCandidateId) || null;
+
+  const resolvedLocation: import('../types').ResolvedLocation | null = 
+    result?.parsedQuery?.resolvedLocation || 
+    result?.parsedQuery?.locationDetails || 
+    queryPlan?.resolvedLocation || 
+    queryPlan?.locationDetails || 
+    (queryPlan?.locationStatus === 'resolved' && queryPlan?.aoi ? { 
+      name: queryPlan.location || 'AOI', 
+      displayName: `${queryPlan.location || 'AOI'}, India`, 
+      bbox: queryPlan.aoi,
+      center: {
+        lat: (queryPlan.aoi[1] + queryPlan.aoi[3]) / 2,
+        lon: (queryPlan.aoi[0] + queryPlan.aoi[2]) / 2
+      },
+      source: 'OpenStreetMap Nominatim',
+      confidence: 'high'
+    } : null);
+  const isAmbiguousLocation = (result?.parsedQuery?.locationStatus === 'ambiguous' || queryPlan?.locationStatus === 'ambiguous');
+  const locationCandidates = result?.parsedQuery?.locationCandidates || queryPlan?.locationCandidates || [];
+  const isUnresolvedLocation = (result?.parsedQuery?.locationStatus === 'unresolved' || queryPlan?.locationStatus === 'unresolved' || (hasSearched && !isLoading && !resolvedLocation && !isAmbiguousLocation && (errorMessage?.toLowerCase().includes('location') || queryPlan?.missingFields.includes('location'))));
 
   return (
     <div className="p-4 sm:p-5 space-y-4 max-w-[1600px] mx-auto select-none">
@@ -163,7 +215,7 @@ export const SemanticSearch: React.FC = () => {
               type="text"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder="e.g. 'Find new construction around Pune between May 2024 and October 2024'"
+              placeholder="e.g. 'Show new construction around Nashik between May 2024 and May 2026'"
               className="w-full bg-white border border-slate-300 rounded pl-9 pr-3 py-1.5 text-xs text-slate-900 placeholder-slate-400 focus:outline-hidden focus:border-teal-700 transition-colors"
             />
           </div>
@@ -185,6 +237,53 @@ export const SemanticSearch: React.FC = () => {
             )}
           </button>
         </form>
+
+        {/* Compact Location Information (Section 6) */}
+        {hasSearched && (
+          <div className="mt-3 pt-2.5 border-t border-slate-100">
+            {resolvedLocation ? (
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 p-2 bg-emerald-50/70 border border-emerald-200/80 rounded text-xs">
+                <div>
+                  <div className="text-[10px] font-mono font-bold text-emerald-800 uppercase tracking-wider">LOCATION</div>
+                  <div className="text-xs font-semibold text-slate-800">{resolvedLocation.displayName || resolvedLocation.name}</div>
+                </div>
+                <div className="flex items-center space-x-1 text-[11px] font-mono font-bold text-emerald-700 bg-white/90 px-2 py-0.5 rounded border border-emerald-300 w-fit">
+                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+                  <span>AOI RESOLVED ✓</span>
+                </div>
+              </div>
+            ) : isAmbiguousLocation ? (
+              <div className="p-2.5 bg-blue-50/80 border border-blue-200 rounded text-xs space-y-2">
+                <div className="flex items-center space-x-1.5 text-[10px] font-mono font-bold text-blue-900 uppercase tracking-wider">
+                  <Info className="w-3.5 h-3.5 text-blue-600" />
+                  <span>LOCATION NEEDS CLARIFICATION</span>
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  {locationCandidates.map((cand: any, idx: number) => (
+                    <button
+                      key={idx}
+                      type="button"
+                      onClick={() => handleSelectLocationCandidate(cand)}
+                      className="px-2.5 py-1 text-[11px] font-medium bg-white hover:bg-blue-100/70 text-slate-800 border border-blue-200 rounded transition-colors text-left shadow-2xs"
+                    >
+                      [ {cand.displayName} ]
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ) : isUnresolvedLocation ? (
+              <div className="p-2.5 bg-rose-50/80 border border-rose-200 rounded text-xs">
+                <div className="flex items-center space-x-1.5 text-[10px] font-mono font-bold text-rose-900 uppercase tracking-wider">
+                  <AlertTriangle className="w-3.5 h-3.5 text-rose-600" />
+                  <span>LOCATION NOT FOUND</span>
+                </div>
+                <div className="text-xs text-rose-700 mt-1">
+                  Try adding a state or country.
+                </div>
+              </div>
+            ) : null}
+          </div>
+        )}
       </div>
 
       {/* Query Clarification / Error Message */}
@@ -207,6 +306,7 @@ export const SemanticSearch: React.FC = () => {
           }}
           onSelectExample={handleSelectExample}
           onSelectIntent={handleSelectIntent}
+          onSelectLocation={handleSelectLocationCandidate}
         />
       )}
 
@@ -214,10 +314,10 @@ export const SemanticSearch: React.FC = () => {
       {result && result.beforeScene && result.afterScene && (
         <InvestigationRibbon
           currentStage={selectedCandidate ? 'explain' : 'detect'}
-          aoiLabel={result.parsedQuery?.location || 'Working AOI'}
+          aoiLabel={resolvedLocation?.displayName || result.parsedQuery?.location || 'Working AOI'}
           centroidCoords={[
-            (result.beforeScene.bbox ? (result.beforeScene.bbox[0] + result.beforeScene.bbox[2]) / 2 : 73.8567),
-            (result.beforeScene.bbox ? (result.beforeScene.bbox[1] + result.beforeScene.bbox[3]) / 2 : 18.5204)
+            (resolvedLocation?.center ? resolvedLocation.center.lon : (result.beforeScene.bbox ? (result.beforeScene.bbox[0] + result.beforeScene.bbox[2]) / 2 : 73.8567)),
+            (resolvedLocation?.center ? resolvedLocation.center.lat : (result.beforeScene.bbox ? (result.beforeScene.bbox[1] + result.beforeScene.bbox[3]) / 2 : 18.5204))
           ]}
           beforeDate={result.beforeScene.acquisition_date}
           afterDate={result.afterScene.acquisition_date}
@@ -251,7 +351,7 @@ export const SemanticSearch: React.FC = () => {
                 data_mode: result.afterScene.data_mode,
                 preview_url: `/api/sentinel2/preview/${result.afterScene.id}`
               }}
-              aoiBbox={result.parsedQuery?.aoi || [73.70, 18.40, 74.05, 18.70]}
+              aoiBbox={result.parsedQuery?.aoi || resolvedLocation?.bbox || [73.70, 18.40, 74.05, 18.70]}
               analysis={result.analysis}
               selectedCandidateId={selectedCandidateId}
               onSelectCandidate={(id) => setSelectedCandidateId(id)}

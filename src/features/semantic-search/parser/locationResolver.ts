@@ -33,6 +33,46 @@ export interface LocationResult {
 // 1. Synchronous Deterministic Resolver (Backward-Compatibility)
 // ============================================================================
 
+/**
+ * Extracts a location name or phrase from a natural language query
+ * using aliases, prepositional patterns, or comparison verbs.
+ */
+export function extractLocationName(query: string): string | null {
+  if (!query || typeof query !== 'string') return null;
+  const lowerQuery = query.toLowerCase().trim();
+
+  // 1. Check for known aliases first for fast matching
+  for (const [alias, canonical] of Object.entries(LOCATION_ALIASES)) {
+    const pattern = new RegExp(`\\b${alias}\\b`, 'i');
+    if (pattern.test(lowerQuery)) {
+      return canonical.charAt(0).toUpperCase() + canonical.slice(1);
+    }
+  }
+
+  // 2. Prepositional extraction: around, near, in, at, surrounding, of, etc.
+  const prepositionPattern = /(?:around|near|in|at|surrounding|of)\s+(?:the\s+(?:region|area|city|zone)\s+of\s+|the\s+)?([A-Za-z0-9\s,\.-]+?)(?=\s+(?:between|from|during|since|before|after|to|until|with|where|having|for|\d{4}|$)|[,\.\?!]|$)/i;
+  const match = query.match(prepositionPattern);
+  if (match && match[1]) {
+    let loc = match[1].trim();
+    loc = loc.replace(/\s+(?:between|from|to|until|during|with)$/i, '').trim();
+    if (loc.length > 1) {
+      return loc;
+    }
+  }
+
+  // 3. Comparison / investigation verbs: "compare Pune from 2024 to 2026", "investigate Nashik between..."
+  const verbPattern = /(?:compare|investigate|analyze|examine|search|for)\s+([A-Za-z0-9\s,\.-]+?)(?=\s+(?:between|from|during|since|before|after|to|until|with|\d{4}|$)|[,\.\?!]|$)/i;
+  const verbMatch = query.match(verbPattern);
+  if (verbMatch && verbMatch[1]) {
+    let loc = verbMatch[1].trim();
+    if (!/^(?:satellite|imagery|images|scenes|changes|spectral|vegetation|built-up|construction)$/i.test(loc)) {
+      return loc;
+    }
+  }
+
+  return null;
+}
+
 export function resolveLocation(query: string): LocationResult {
   const lowerQuery = query.toLowerCase().trim();
 
@@ -82,6 +122,16 @@ export function resolveLocation(query: string): LocationResult {
     }
   }
 
+  // Dynamic candidate name extraction for synchronous parsing
+  const extractedName = extractLocationName(query);
+  if (extractedName) {
+    return {
+      location: extractedName,
+      aoi: null,
+      confidence: 0.7
+    };
+  }
+
   return {
     location: null,
     aoi: null,
@@ -90,9 +140,17 @@ export function resolveLocation(query: string): LocationResult {
 }
 
 export function getSupportedLocations(): string[] {
-  return Object.keys(AOI_PRESETS).map(
-    loc => loc.charAt(0).toUpperCase() + loc.slice(1)
-  );
+  return [
+    'Pune',
+    'Mumbai',
+    'Nashik',
+    'Nagpur',
+    'Kolhapur',
+    'Bengaluru',
+    'Delhi',
+    'Chennai',
+    'Jaipur'
+  ];
 }
 
 // ============================================================================

@@ -25,12 +25,14 @@ interface QueryClarificationProps {
   queryPlan: QueryPlan;
   onSelectExample?: (query: string) => void;
   onSelectIntent?: (intent: string) => void;
+  onSelectLocation?: (location: any) => void;
 }
 
 export const QueryClarification: React.FC<QueryClarificationProps> = ({
   queryPlan,
   onSelectExample,
-  onSelectIntent
+  onSelectIntent,
+  onSelectLocation
 }) => {
   const clarification = generateClarification(queryPlan);
 
@@ -98,10 +100,22 @@ export const QueryClarification: React.FC<QueryClarificationProps> = ({
             <MapPin className="w-4 h-4 text-slate-400" />
             <span className="text-xs font-medium text-slate-700">Location</span>
           </div>
-          {queryPlan.location ? (
+          {queryPlan.locationStatus === 'unresolved' ? (
+            <div className="flex items-center space-x-1.5">
+              <XCircle className="w-3.5 h-3.5 text-rose-500" />
+              <span className="text-xs text-rose-600 font-medium">Location Not Found</span>
+            </div>
+          ) : queryPlan.locationStatus === 'ambiguous' ? (
+            <div className="flex items-center space-x-1.5">
+              <AlertTriangle className="w-3.5 h-3.5 text-blue-500" />
+              <span className="text-xs text-blue-700 font-medium">Needs Clarification</span>
+            </div>
+          ) : queryPlan.location ? (
             <div className="flex items-center space-x-1.5">
               <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
-              <span className="text-xs font-semibold text-emerald-700">{queryPlan.location}</span>
+              <span className="text-xs font-semibold text-emerald-700">
+                {queryPlan.resolvedLocation?.displayName || queryPlan.location}
+              </span>
             </div>
           ) : (
             <div className="flex items-center space-x-1.5">
@@ -175,6 +189,30 @@ export const QueryClarification: React.FC<QueryClarificationProps> = ({
                   <span className="text-xs font-medium text-slate-700">{option.label}</span>
                 </button>
               ))}
+          </div>
+        </div>
+      )}
+
+      {/* Ambiguous Location Selection */}
+      {(queryPlan.locationStatus === 'ambiguous' || (queryPlan.locationCandidates && queryPlan.locationCandidates.length > 0)) && queryPlan.locationCandidates && onSelectLocation && (
+        <div className="space-y-2">
+          <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider font-mono">
+            LOCATION NEEDS CLARIFICATION
+          </div>
+          <p className="text-xs text-slate-600">
+            Multiple matching locations were found. Please select your target geographic area:
+          </p>
+          <div className="flex flex-wrap gap-1.5">
+            {queryPlan.locationCandidates.map((candidate, idx) => (
+              <button
+                key={idx}
+                type="button"
+                onClick={() => onSelectLocation(candidate)}
+                className="px-2.5 py-1.5 bg-white border border-slate-200 rounded hover:border-teal-400 hover:bg-teal-50 transition-colors text-left text-xs font-medium text-slate-800 shadow-2xs"
+              >
+                [ {candidate.displayName} ]
+              </button>
+            ))}
           </div>
         </div>
       )}
