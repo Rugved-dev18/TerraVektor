@@ -359,10 +359,10 @@ export const LeafletMapView: React.FC<LeafletMapViewProps> = ({
 
   return (
     <div className="relative w-full h-full min-h-[460px] rounded-lg overflow-hidden border border-slate-300 shadow-xs">
-      <div ref={mapContainerRef} className="w-full h-full min-h-[460px] bg-slate-100 z-0" />
+      <div ref={mapContainerRef} className="w-full h-full min-h-[460px] bg-slate-100 relative z-0 isolate" />
 
       {/* Floating Map Controls Toolbar */}
-      <div className="absolute top-4 left-4 z-10 flex flex-col space-y-2">
+      <div className="absolute top-4 left-4 z-[1000] flex flex-col space-y-2">
         <button
           type="button"
           onClick={() => setIsDrawingAoi(!isDrawingAoi)}
@@ -391,7 +391,7 @@ export const LeafletMapView: React.FC<LeafletMapViewProps> = ({
       </div>
 
       {/* Map Tools Top Right */}
-      <div className="absolute top-4 right-14 z-10 flex items-center space-x-2">
+      <div className="absolute top-4 right-14 z-[1000] flex items-center space-x-2">
         <button
           type="button"
           onClick={handleToggleBaseLayer}
@@ -414,7 +414,7 @@ export const LeafletMapView: React.FC<LeafletMapViewProps> = ({
 
       {/* Drawing Mode Guide Banner */}
       {isDrawingAoi && (
-        <div className="absolute bottom-4 left-1/2 transform -translate-x-1/2 z-10 bg-amber-50 text-amber-950 px-3.5 py-1.5 rounded text-xs font-semibold shadow-md border border-amber-300 flex items-center space-x-2">
+        <div className="absolute bottom-4 left-1/2 transform -translate-x-1/2 z-[1000] bg-amber-50 text-amber-950 px-3.5 py-1.5 rounded text-xs font-semibold shadow-md border border-amber-300 flex items-center space-x-2">
           <Crosshair className="w-3.5 h-3.5 animate-spin text-amber-800" />
           <span>Click top-left corner, then click bottom-right corner on the map to define AOI</span>
           <button
@@ -427,7 +427,7 @@ export const LeafletMapView: React.FC<LeafletMapViewProps> = ({
       )}
 
       {/* Map Legend Overlay */}
-      <div className="absolute bottom-4 left-4 z-10 bg-white/95 backdrop-blur-sm border border-slate-300 rounded p-2.5 shadow-sm text-xs space-y-1 pointer-events-none">
+      <div className="absolute bottom-4 left-4 z-[1000] bg-white/95 backdrop-blur-sm border border-slate-300 rounded p-2.5 shadow-sm text-xs space-y-1 pointer-events-none">
         <div className="flex items-center space-x-2">
           <span className="w-3 h-3 rounded-xs border-2 border-amber-600 bg-amber-500/20" />
           <span className="text-slate-700 font-medium">Selected AOI</span>

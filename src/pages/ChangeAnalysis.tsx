@@ -344,6 +344,65 @@ export const ChangeAnalysis: React.FC = () => {
         </div>
       </div>
 
+      {/* Bi-Temporal Investigation Map */}
+      {beforeProduct && afterProduct && (
+        <div className="bg-white rounded-lg p-5 border border-slate-200 shadow-xs space-y-3">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-200 pb-3">
+            <div>
+              <div className="flex items-center space-x-2 text-[10px] font-bold text-teal-800 uppercase tracking-wider font-mono">
+                <Activity className="w-3.5 h-3.5" />
+                <span>Sentinel-2 Bi-Temporal Map Comparison</span>
+              </div>
+              <h2 className="text-sm font-bold text-slate-900 mt-0.5">
+                Interactive Before vs After Satellite Inspector
+              </h2>
+            </div>
+            <div className="flex items-center space-x-2">
+              {analysisResult ? (
+                <>
+                  {getDataModeBadge(analysisResult.data_mode)}
+                  {analysisResult.data_mode === 'demo_fallback' && (
+                    <span className="text-[10px] text-amber-700 font-mono flex items-center">
+                      <AlertTriangle className="w-3 h-3 mr-1 text-amber-600" />
+                      Demo Mode
+                    </span>
+                  )}
+                </>
+              ) : (
+                <span className="text-xs text-slate-500 font-mono">
+                  {isAnalyzing ? 'Computing difference...' : 'Select Before/After to inspect'}
+                </span>
+              )}
+            </div>
+          </div>
+
+          <SatelliteInvestigationMap
+            beforeScene={{
+              id: beforeProduct.id,
+              name: beforeProduct.name,
+              acquisition_date: beforeProduct.acquisition_date,
+              tile_id: beforeProduct.tile_id,
+              cloud_cover: beforeProduct.cloud_cover,
+              bbox: beforeProduct.bbox,
+              data_mode: beforeProduct.data_mode,
+              preview_url: getSentinel2PreviewUrl(beforeProduct.id)
+            }}
+            afterScene={{
+              id: afterProduct.id,
+              name: afterProduct.name,
+              acquisition_date: afterProduct.acquisition_date,
+              tile_id: afterProduct.tile_id,
+              cloud_cover: afterProduct.cloud_cover,
+              bbox: afterProduct.bbox,
+              data_mode: afterProduct.data_mode,
+              preview_url: getSentinel2PreviewUrl(afterProduct.id)
+            }}
+            aoiBbox={aoiBbox || [73.70, 18.40, 74.05, 18.70]}
+            analysis={analysisResult}
+          />
+        </div>
+      )}
+
       {/* Analysis Results */}
       {analysisResult && (
         <div className="bg-white rounded-lg p-5 border border-slate-200 shadow-xs space-y-4">
@@ -382,36 +441,6 @@ export const ChangeAnalysis: React.FC = () => {
               <span className="text-lg font-bold text-slate-800 font-mono">{analysisResult.metadata.processing_time_ms} ms</span>
             </div>
           </div>
-
-          {/* Large Before/After Investigation Map - Visual Centerpiece */}
-          {beforeProduct && afterProduct && (
-            <div className="pt-2">
-              <SatelliteInvestigationMap
-                beforeScene={{
-                  id: beforeProduct.id,
-                  name: beforeProduct.name,
-                  acquisition_date: beforeProduct.acquisition_date,
-                  tile_id: beforeProduct.tile_id,
-                  cloud_cover: beforeProduct.cloud_cover,
-                  bbox: beforeProduct.bbox,
-                  data_mode: beforeProduct.data_mode,
-                  preview_url: getSentinel2PreviewUrl(beforeProduct.id)
-                }}
-                afterScene={{
-                  id: afterProduct.id,
-                  name: afterProduct.name,
-                  acquisition_date: afterProduct.acquisition_date,
-                  tile_id: afterProduct.tile_id,
-                  cloud_cover: afterProduct.cloud_cover,
-                  bbox: afterProduct.bbox,
-                  data_mode: afterProduct.data_mode,
-                  preview_url: getSentinel2PreviewUrl(afterProduct.id)
-                }}
-                aoiBbox={aoiBbox || [73.70, 18.40, 74.05, 18.70]}
-                analysis={analysisResult}
-              />
-            </div>
-          )}
 
           {/* Detailed Layer Inspector */}
           <div className="space-y-3 pt-3 border-t border-slate-200">

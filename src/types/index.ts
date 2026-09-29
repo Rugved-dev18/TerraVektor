@@ -237,9 +237,11 @@ export interface CandidateRegion {
   bounding_box: [number, number, number, number];
   bbox?: [number, number, number, number];
   geometry: {
-    type: 'Polygon';
-    coordinates: number[][][];
+    type: 'Polygon' | 'MultiPolygon';
+    coordinates: number[][][] | number[][][][];
   };
+  pixel_coordinates?: Array<{ lon: number; lat: number }>;
+  pixelCoords?: Array<{ lon: number; lat: number }>;
   before_ndvi: number;
   before_ndvi_mean: number;
   after_ndvi: number;
