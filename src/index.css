@@ -90,3 +90,30 @@
   border-color: #e2e8f0;
 }
 
+/* Earth Observation Map Color Changing Modes (Optical RGB, C-Band SAR, False Colour NIR) */
+.map-mode-optical-rgb {
+  filter: none !important;
+  transition: filter 0.3s ease-in-out;
+}
+
+.map-mode-c-band-sar {
+  filter: url(#terravektor-cband-sar) contrast(1.15) brightness(0.98) !important;
+  transition: filter 0.3s ease-in-out;
+}
+
+.map-mode-false-color-nir {
+  filter: url(#terravektor-false-color-nir) saturate(1.25) contrast(1.1) !important;
+  transition: filter 0.3s ease-in-out;
+}
+
+/* Leaflet pane and image layer target rules */
+.leaflet-pane.map-mode-c-band-sar img,
+.leaflet-image-layer.map-mode-c-band-sar {
+  filter: url(#terravektor-cband-sar) contrast(1.15) brightness(0.98) !important;
+}
+
+.leaflet-pane.map-mode-false-color-nir img,
+.leaflet-image-layer.map-mode-false-color-nir {
+  filter: url(#terravektor-false-color-nir) saturate(1.25) contrast(1.1) !important;
+}
+

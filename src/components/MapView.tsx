@@ -1,6 +1,9 @@
 import React, { useEffect, useRef, useState } from 'react';
 import maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
+import { MapColorMode } from '../types/mapModes';
+import { MapColorFilters, getMapColorFilterStyle } from './MapColorFilters';
+import { MapColorModeSelector } from './MapColorModeSelector';
 
 interface MapViewProps {
   center?: [number, number];
@@ -12,17 +15,20 @@ interface MapViewProps {
     description?: string;
   }>;
   onMarkerClick?: (marker: any) => void;
+  colorMode?: MapColorMode;
 }
 
 const MapView: React.FC<MapViewProps> = ({
   center = [77.2090, 28.6139], // Default to Delhi
   zoom = 5,
   markers = [],
-  onMarkerClick
+  onMarkerClick,
+  colorMode: initialColorMode = 'optical-rgb'
 }) => {
   const mapContainer = useRef<HTMLDivElement>(null);
   const map = useRef<maplibregl.Map | null>(null);
   const [mapLoaded, setMapLoaded] = useState(false);
+  const [mapColorMode, setMapColorMode] = useState<MapColorMode>(initialColorMode);
 
   useEffect(() => {
     if (!mapContainer.current || map.current) return;
@@ -131,9 +137,31 @@ const MapView: React.FC<MapViewProps> = ({
     }
   }, [center, zoom, mapLoaded]);
 
+  // Apply spectral filter when mapColorMode changes
+  useEffect(() => {
+    if (!mapContainer.current) return;
+    const filterStyle = getMapColorFilterStyle(mapColorMode);
+    const canvas = mapContainer.current.querySelector('canvas');
+    if (canvas) {
+      canvas.style.filter = filterStyle.filter as string;
+      (canvas.style as any).WebkitFilter = filterStyle.WebkitFilter as string;
+    }
+  }, [mapColorMode, mapLoaded]);
+
   return (
     <div className="relative w-full h-full">
+      <MapColorFilters />
       <div ref={mapContainer} className="absolute inset-0 w-full h-full" />
+
+      {/* Floating Map Color Changing Mode Selector */}
+      <div className="absolute top-3 left-3 z-10 pointer-events-auto">
+        <MapColorModeSelector
+          currentMode={mapColorMode}
+          onModeChange={setMapColorMode}
+          compact={true}
+        />
+      </div>
+
       {!mapLoaded && (
         <div className="absolute inset-0 flex items-center justify-center bg-slate-100">
           <div className="text-center">

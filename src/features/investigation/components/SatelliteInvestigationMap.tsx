@@ -20,6 +20,9 @@ import {
 } from 'lucide-react';
 import { format } from 'date-fns';
 import { BuiltUpAnalysisResult, ChangeAnalysisResult, CandidateRegion } from '../../../types';
+import { MapColorMode, MAP_COLOR_MODES } from '../../../types/mapModes';
+import { MapColorFilters, getMapColorFilterStyle } from '../../../components/MapColorFilters';
+import { MapColorModeSelector } from '../../../components/MapColorModeSelector';
 
 export interface SceneSummary {
   id: string;
@@ -69,6 +72,7 @@ export const SatelliteInvestigationMap: React.FC<SatelliteInvestigationMapProps>
   const candidateLayersRef = useRef<Map<string, L.Layer>>(new Map());
 
   // Component state
+  const [mapColorMode, setMapColorMode] = useState<MapColorMode>('optical-rgb');
   const [sliderPosition, setSliderPosition] = useState<number>(50); // percentage 0 - 100
   const [isDraggingSlider, setIsDraggingSlider] = useState<boolean>(false);
   const [showChangeOverlay, setShowChangeOverlay] = useState<boolean>(true);
@@ -168,6 +172,28 @@ export const SatelliteInvestigationMap: React.FC<SatelliteInvestigationMapProps>
   useEffect(() => {
     applyPaneClips(sliderPosition);
   }, [sliderPosition, applyPaneClips]);
+
+  // Apply Map Color Changing Mode (Optical RGB, C-Band SAR, False Colour NIR)
+  useEffect(() => {
+    const filterStyle = getMapColorFilterStyle(mapColorMode);
+
+    // Apply filter to Before and After Panes
+    [beforePaneRef.current, afterPaneRef.current].forEach(pane => {
+      if (pane) {
+        pane.style.filter = filterStyle.filter as string;
+        (pane.style as any).WebkitFilter = filterStyle.WebkitFilter as string;
+      }
+    });
+
+    // Also apply to basemap tile pane
+    if (mapRef.current) {
+      const tilePane = mapRef.current.getPane('tilePane');
+      if (tilePane) {
+        tilePane.style.filter = filterStyle.filter as string;
+        (tilePane.style as any).WebkitFilter = filterStyle.WebkitFilter as string;
+      }
+    }
+  }, [mapColorMode]);
 
   // Load Imagery Overlays and AOI Boundary
   useEffect(() => {
@@ -539,6 +565,9 @@ export const SatelliteInvestigationMap: React.FC<SatelliteInvestigationMapProps>
 
   return (
     <div className="relative w-full h-[620px] lg:h-[700px] rounded-md overflow-hidden border border-slate-200 shadow-xs bg-slate-950 select-none">
+      {/* Embedded SVG spectral color mode filters */}
+      <MapColorFilters />
+
       {/* 1. Underlying Leaflet Map Canvas with isolated stacking context */}
       <div 
         ref={sliderContainerRef}
@@ -563,9 +592,17 @@ export const SatelliteInvestigationMap: React.FC<SatelliteInvestigationMapProps>
         </div>
 
         {/* 3. FLOATING MAP INSTRUMENT DOCK (Section 6) */}
-        <div className="absolute top-3 left-3 z-[1050] flex flex-col gap-2 pointer-events-auto">
+        <div className="absolute top-3 left-3 z-[1050] flex flex-col gap-2 pointer-events-auto max-w-[calc(100%-80px)]">
+          {/* Map Color Changing Mode Selector Toolbar */}
+          <div className="flex items-center gap-2 flex-wrap">
+            <MapColorModeSelector
+              currentMode={mapColorMode}
+              onModeChange={setMapColorMode}
+            />
+          </div>
+
           {/* Mode & Layer Dock */}
-          <div className="bg-white/95 backdrop-blur-md border border-slate-200/90 rounded-md p-1.5 shadow-lg flex items-center space-x-1.5 text-xs">
+          <div className="bg-white/95 backdrop-blur-md border border-slate-200/90 rounded-md p-1.5 shadow-lg flex items-center space-x-1.5 text-xs flex-wrap">
             {/* View Split Presets: Before / Split / After buttons */}
             <div className="flex items-center bg-slate-100 rounded p-0.5 text-xs font-medium border border-slate-200 shadow-xs">
               <button

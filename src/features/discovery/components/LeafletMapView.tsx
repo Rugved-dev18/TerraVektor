@@ -4,6 +4,9 @@ import 'leaflet/dist/leaflet.css';
 import { Sentinel2Product } from '../../../types';
 import { format } from 'date-fns';
 import { Layers, Maximize2, Trash2, Crosshair, ExternalLink, Calendar, Cloud, Info } from 'lucide-react';
+import { MapColorMode } from '../../../types/mapModes';
+import { MapColorFilters, getMapColorFilterStyle } from '../../../components/MapColorFilters';
+import { MapColorModeSelector } from '../../../components/MapColorModeSelector';
 
 interface LeafletMapViewProps {
   aoiBbox: [number, number, number, number] | null; // [minLon, minLat, maxLon, maxLat]
@@ -34,6 +37,7 @@ export const LeafletMapView: React.FC<LeafletMapViewProps> = ({
   const footprintsLayerGroupRef = useRef<L.LayerGroup | null>(null);
   const drawStartPointRef = useRef<L.LatLng | null>(null);
   const tempDrawRectRef = useRef<L.Rectangle | null>(null);
+  const [mapColorMode, setMapColorMode] = useState<MapColorMode>('optical-rgb');
   const [activeBaseLayer, setActiveBaseLayer] = useState<'osm' | 'satellite'>('osm');
   const baseLayersRef = useRef<{ osm: L.TileLayer; satellite: L.TileLayer } | null>(null);
 
@@ -98,6 +102,26 @@ export const LeafletMapView: React.FC<LeafletMapViewProps> = ({
       setActiveBaseLayer('osm');
     }
   };
+
+  // Apply spectral filter when mapColorMode changes
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+
+    // If switching to SAR or NIR and currently on OSM, auto-switch to satellite imagery
+    if (mapColorMode !== 'optical-rgb' && activeBaseLayer === 'osm' && baseLayersRef.current) {
+      map.removeLayer(baseLayersRef.current.osm);
+      baseLayersRef.current.satellite.addTo(map);
+      setActiveBaseLayer('satellite');
+    }
+
+    const filterStyle = getMapColorFilterStyle(mapColorMode);
+    const tilePane = map.getPane('tilePane');
+    if (tilePane) {
+      tilePane.style.filter = filterStyle.filter as string;
+      (tilePane.style as any).WebkitFilter = filterStyle.WebkitFilter as string;
+    }
+  }, [mapColorMode, activeBaseLayer]);
 
   // Drawing AOI logic (Click two opposite corners)
   useEffect(() => {
@@ -359,6 +383,9 @@ export const LeafletMapView: React.FC<LeafletMapViewProps> = ({
 
   return (
     <div className="relative w-full h-full min-h-[460px] rounded-lg overflow-hidden border border-slate-300 shadow-xs">
+      {/* Embedded SVG spectral color mode filters */}
+      <MapColorFilters />
+
       <div ref={mapContainerRef} className="w-full h-full min-h-[460px] bg-slate-100 relative z-0 isolate" />
 
       {/* Floating Map Controls Toolbar */}
@@ -392,6 +419,13 @@ export const LeafletMapView: React.FC<LeafletMapViewProps> = ({
 
       {/* Map Tools Top Right */}
       <div className="absolute top-4 right-14 z-[1000] flex items-center space-x-2">
+        {/* Map Color Changing Mode Selector */}
+        <MapColorModeSelector
+          currentMode={mapColorMode}
+          onModeChange={setMapColorMode}
+          compact={true}
+        />
+
         <button
           type="button"
           onClick={handleToggleBaseLayer}
