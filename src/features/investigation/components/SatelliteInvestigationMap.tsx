@@ -19,7 +19,7 @@ import {
   Sparkles
 } from 'lucide-react';
 import { format } from 'date-fns';
-import { BuiltUpAnalysisResult, ChangeAnalysisResult } from '../../../types';
+import { BuiltUpAnalysisResult, ChangeAnalysisResult, CandidateRegion } from '../../../types';
 
 export interface SceneSummary {
   id: string;
@@ -32,18 +32,7 @@ export interface SceneSummary {
   preview_url?: string;
 }
 
-export interface CandidateRegion {
-  id: string;
-  type: string;
-  pixel_count: number;
-  area_m2: number;
-  centroid: [number, number] | number[];
-  bounding_box: [number, number, number, number] | number[];
-  mean_delta_ndvi: number;
-  mean_delta_ndbi: number;
-  min_delta_ndvi?: number;
-  max_delta_ndbi?: number;
-}
+export type { CandidateRegion };
 
 interface SatelliteInvestigationMapProps {
   beforeScene: SceneSummary;
@@ -77,7 +66,7 @@ export const SatelliteInvestigationMap: React.FC<SatelliteInvestigationMapProps>
   const afterOverlayRef = useRef<L.ImageOverlay | null>(null);
   const maskOverlayRef = useRef<L.ImageOverlay | null>(null);
   const aoiRectRef = useRef<L.Rectangle | null>(null);
-  const candidateLayersRef = useRef<Map<string, L.Rectangle>>(new Map());
+  const candidateLayersRef = useRef<Map<string, L.Layer>>(new Map());
 
   // Component state
   const [sliderPosition, setSliderPosition] = useState<number>(50); // percentage 0 - 100
@@ -281,34 +270,59 @@ export const SatelliteInvestigationMap: React.FC<SatelliteInvestigationMapProps>
 
     candidateList.forEach(cand => {
       const isSelected = cand.id === selectedCandidateId;
-      const isNewConstruction = cand.type === 'new_construction_candidate';
-      const strokeColor = isSelected ? '#facc15' : isNewConstruction ? '#f97316' : '#a855f7';
-      const fillColor = isNewConstruction ? '#ea580c' : '#9333ea';
+      const isPossibleConstruction = cand.type === 'possible_construction_candidate';
+      const isBuiltUp = cand.type === 'built_up_change_candidate';
+      const strokeColor = isSelected ? '#facc15' : isPossibleConstruction ? '#f97316' : isBuiltUp ? '#a855f7' : '#0284c7';
+      const fillColor = isPossibleConstruction ? '#ea580c' : isBuiltUp ? '#9333ea' : '#0369a1';
 
-      const [cMinLon, cMinLat, cMaxLon, cMaxLat] = cand.bounding_box;
-      const bounds = L.latLngBounds([cMinLat, cMinLon], [cMaxLat, cMaxLon]);
+      const typeLabel = cand.display_name || (isPossibleConstruction ? 'Possible Construction Activity' : isBuiltUp ? 'Built-up Change Candidate' : 'Spectral Change Candidate');
+      const iconSymbol = isPossibleConstruction ? '🟧' : isBuiltUp ? '🟪' : '🟦';
 
-      const rect = L.rectangle(bounds, {
-        color: strokeColor,
-        weight: isSelected ? 3.5 : 2,
-        dashArray: isSelected ? undefined : '3, 3',
-        fillColor: fillColor,
-        fillOpacity: isSelected ? 0.42 : 0.22,
-        className: isSelected ? 'candidate-selected-pulsing' : 'candidate-vector'
-      }).addTo(map);
+      let layer: L.Layer;
 
-      const typeLabel = isNewConstruction ? 'New Construction Candidate' : 'Building Expansion Candidate';
+      // Render actual polygon geometry if available
+      if (cand.geometry?.coordinates?.[0] && cand.geometry.coordinates[0].length >= 4) {
+        // Convert GeoJSON [lon, lat] coordinates to Leaflet [lat, lon]
+        const latLngs = cand.geometry.coordinates.map(ring =>
+          ring.map(pt => [pt[1], pt[0]] as [number, number])
+        );
+
+        layer = L.polygon(latLngs, {
+          color: strokeColor,
+          weight: isSelected ? 3.5 : 2,
+          dashArray: isSelected ? undefined : '3, 3',
+          fillColor: fillColor,
+          fillOpacity: isSelected ? 0.45 : 0.25,
+          className: isSelected ? 'candidate-selected-pulsing' : 'candidate-vector'
+        }).addTo(map);
+      } else {
+        const [cMinLon, cMinLat, cMaxLon, cMaxLat] = cand.bounding_box;
+        const bounds = L.latLngBounds([cMinLat, cMinLon], [cMaxLat, cMaxLon]);
+
+        layer = L.rectangle(bounds, {
+          color: strokeColor,
+          weight: isSelected ? 3.5 : 2,
+          dashArray: isSelected ? undefined : '3, 3',
+          fillColor: fillColor,
+          fillOpacity: isSelected ? 0.42 : 0.22,
+          className: isSelected ? 'candidate-selected-pulsing' : 'candidate-vector'
+        }).addTo(map);
+      }
+
       const tooltipHtml = `
         <div class="p-1 font-sans text-xs">
           <div class="font-bold flex items-center gap-1.5" style="color: ${strokeColor};">
-            <span>${isNewConstruction ? '🟧' : '🟪'}</span>
+            <span>${iconSymbol}</span>
             <span>${cand.id} &bull; ${typeLabel}</span>
           </div>
           <div class="text-[11px] text-slate-700 mt-1 font-mono">
-            Area: <strong class="text-slate-900">${cand.area_m2.toLocaleString()} m²</strong> (${(cand.area_m2 / 10000).toFixed(2)} ha)
+            Footprint: <strong class="text-slate-900">${cand.area_m2.toLocaleString()} m²</strong> (${(cand.area_m2 / 10000).toFixed(2)} ha)
+          </div>
+          <div class="text-[10px] text-slate-600 font-mono mt-0.5">
+            Support: <strong class="text-slate-900">${cand.pixel_count}</strong> contiguous 10m pixels
           </div>
           <div class="text-[10px] text-slate-500 font-mono mt-0.5">
-            &Delta;NDVI: ${cand.mean_delta_ndvi.toFixed(3)} | &Delta;NDBI: +${cand.mean_delta_ndbi.toFixed(3)}
+            &Delta;NDVI: ${cand.mean_delta_ndvi?.toFixed(3) ?? cand.delta_ndvi?.toFixed(3)} | &Delta;NDBI: +${cand.mean_delta_ndbi?.toFixed(3) ?? cand.delta_ndbi?.toFixed(3)}
           </div>
           <div class="text-[10px] text-teal-800 font-semibold mt-1 font-sans">
             Click to load in Evidence Spine &rarr;
@@ -316,19 +330,19 @@ export const SatelliteInvestigationMap: React.FC<SatelliteInvestigationMapProps>
         </div>
       `;
 
-      rect.bindTooltip(tooltipHtml, {
+      layer.bindTooltip(tooltipHtml, {
         sticky: true,
         direction: 'top',
         className: 'candidate-custom-tooltip'
       });
 
-      rect.on('click', () => {
+      layer.on('click', () => {
         if (onSelectCandidate) {
           onSelectCandidate(cand.id);
         }
       });
 
-      candidateLayersRef.current.set(cand.id, rect);
+      candidateLayersRef.current.set(cand.id, layer);
     });
   }, [candidateList, selectedCandidateId, showCandidates, onSelectCandidate]);
 

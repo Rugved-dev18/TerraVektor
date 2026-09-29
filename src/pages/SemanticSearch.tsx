@@ -392,37 +392,55 @@ export const SemanticSearch: React.FC = () => {
 
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-2 text-[11px] font-mono">
                   <div className="bg-slate-50 p-2 rounded border border-slate-200">
-                    <span className="text-[10px] text-slate-500 block font-sans">Baseline Canopy</span>
+                    <span className="text-[10px] text-slate-500 block font-sans">AOI Mean Canopy (Baseline)</span>
                     <span className="text-xs font-bold text-slate-800 mt-0.5 block">
                       NDVI {(result.analysis as any).metrics?.mean_ndvi_before?.toFixed(3) || (result.analysis as any).before_ndvi_avg?.toFixed(3) || '0.380'}
                     </span>
                   </div>
 
                   <div className="bg-slate-50 p-2 rounded border border-slate-200">
-                    <span className="text-[10px] text-slate-500 block font-sans">Monitoring Canopy</span>
+                    <span className="text-[10px] text-slate-500 block font-sans">AOI Mean Canopy (Monitoring)</span>
                     <span className="text-xs font-bold text-slate-800 mt-0.5 block">
                       NDVI {(result.analysis as any).metrics?.mean_ndvi_after?.toFixed(3) || (result.analysis as any).after_ndvi_avg?.toFixed(3) || '0.222'}
                     </span>
                   </div>
 
                   <div className="bg-slate-50 p-2 rounded border border-slate-200">
-                    <span className="text-[10px] text-slate-500 block font-sans">Impervious NDBI Shift</span>
+                    <span className="text-[10px] text-slate-500 block font-sans">AOI Mean Built-Up Shift</span>
                     <span className="text-xs font-bold text-amber-700 mt-0.5 block">
-                      {(result.analysis as any).metrics?.mean_ndbi_after !== undefined
+                      {(result.analysis as any).metrics?.mean_ndbi_change !== undefined
+                        ? `${(result.analysis as any).metrics.mean_ndbi_change >= 0 ? '+' : ''}${(result.analysis as any).metrics.mean_ndbi_change.toFixed(3)}`
+                        : (result.analysis as any).metrics?.mean_ndbi_after !== undefined
                         ? `+${((result.analysis as any).metrics.mean_ndbi_after - (result.analysis as any).metrics.mean_ndbi_before).toFixed(3)}`
                         : '+0.266'}
                     </span>
                   </div>
 
                   <div className="bg-slate-50 p-2 rounded border border-slate-200">
-                    <span className="text-[10px] text-slate-500 block font-sans">Surface Growth</span>
+                    <span className="text-[10px] text-slate-500 block font-sans">AOI Landscape Change</span>
                     <span className="text-xs font-bold text-teal-800 mt-0.5 block">
-                      {(result.analysis as any).metrics?.built_up_growth_percentage !== undefined
-                        ? `${(result.analysis as any).metrics.built_up_growth_percentage}% expansion`
+                      {(result.analysis as any).metrics?.change_percentage !== undefined
+                        ? `${(result.analysis as any).metrics.change_percentage}% land`
                         : `${(result.analysis as any).change_percentage || '4.8'}% area`}
                     </span>
                   </div>
                 </div>
+
+                {/* Candidate Highlight Strip (when a candidate is selected) */}
+                {selectedCandidate && (
+                  <div className="mt-2 p-2 rounded bg-teal-50/70 border border-teal-200 flex flex-wrap items-center justify-between gap-2 text-[11px] font-mono">
+                    <div className="flex items-center gap-1.5 font-sans">
+                      <span className="font-bold text-teal-950">Active Candidate:</span>
+                      <span className="px-1.5 py-0.5 bg-teal-800 text-white rounded text-[10px] font-bold">{selectedCandidate.id}</span>
+                      <span className="text-teal-900 font-medium">({selectedCandidate.display_name || selectedCandidate.type})</span>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-3 text-slate-700">
+                      <span>Candidate NDVI: <strong className="text-slate-900">{selectedCandidate.before_ndvi_mean?.toFixed(3)} &rarr; {selectedCandidate.after_ndvi_mean?.toFixed(3)}</strong> (&Delta;NDVI: <strong className="text-emerald-700">{selectedCandidate.mean_delta_ndvi?.toFixed(3)}</strong>)</span>
+                      <span>Candidate NDBI: <strong className="text-slate-900">{selectedCandidate.before_ndbi_mean?.toFixed(3)} &rarr; {selectedCandidate.after_ndbi_mean?.toFixed(3)}</strong> (&Delta;NDBI: <strong className="text-amber-700">+{selectedCandidate.mean_delta_ndbi?.toFixed(3)}</strong>)</span>
+                      <span>Footprint: <strong className="text-slate-900">{selectedCandidate.area_m2.toLocaleString()} m²</strong> ({selectedCandidate.pixel_count} contiguous 10m pixels &bull; {((selectedCandidate.area_m2)/10000).toFixed(2)} ha)</span>
+                    </div>
+                  </div>
+                )}
               </div>
             )}
           </div>
