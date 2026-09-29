@@ -6,7 +6,7 @@ import { fileURLToPath } from 'url';
 import { Buffer } from 'buffer';
 import jpeg from 'jpeg-js';
 import * as GeoTIFF from 'geotiff';
-import { resolveGeographicLocation, extractLocationName } from './src/features/semantic-search/parser/locationResolver';
+import { resolveGeographicLocation, extractLocationName } from './src/features/semantic-search/parser/locationResolver.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -205,7 +205,7 @@ scenes.forEach(scene => {
 
 async function startServer() {
   const app = express();
-  const PORT = 3000;
+  const PORT = Number(process.env.PORT || process.env.RENDER_PORT) || 3000;
 
   app.use(cors());
   app.use(express.json({ limit: '50mb' }));
@@ -413,7 +413,7 @@ async function startServer() {
     const scored = scenes.map((scene, idx) => {
       let score = 0.55;
       const haystack = `${scene.scene_name} ${scene.sensor} ${scene.source}`.toLowerCase();
-      terms.forEach(term => {
+      terms.forEach((term: string) => {
         if (haystack.includes(term)) {
           score += 0.15;
         }
@@ -868,7 +868,7 @@ async function startServer() {
       // Check Cache
       const cacheKey = JSON.stringify({
         bbox: bbox ? bbox.map(n => Number(n.toFixed(3))) : null,
-        polygon: geojson_polygon?.coordinates ? geojson_polygon.coordinates[0].map(pt => [Number(pt[0].toFixed(3)), Number(pt[1].toFixed(3))]) : null,
+        polygon: geojson_polygon?.coordinates ? geojson_polygon.coordinates[0].map((pt: number[]) => [Number(pt[0].toFixed(3)), Number(pt[1].toFixed(3))]) : null,
         startDateStr,
         endDateStr,
         maxCloudCover,
@@ -1735,7 +1735,7 @@ async function startServer() {
         before_image_url: `/api/sentinel2/preview/${before_product_id}`,
         after_image_url: `/api/sentinel2/preview/${after_product_id}`,
         statistics: {
-          total_pixels: rasterResult.statistics.total_valid_pixels,
+          total_valid_pixels: rasterResult.statistics.total_valid_pixels,
           changed_pixels: rasterResult.statistics.changed_pixels,
           unchanged_pixels: rasterResult.statistics.unchanged_pixels
         },
@@ -1821,6 +1821,10 @@ async function startServer() {
     error?: string;
     status?: 'valid' | 'incomplete' | 'ambiguous' | 'unsupported';
     missingFields?: string[];
+    locationStatus?: 'resolved' | 'ambiguous' | 'unresolved';
+    resolvedLocation?: any;
+    locationDetails?: any;
+    locationCandidates?: any[];
   }
 
   // AOI Presets for Indian cities
