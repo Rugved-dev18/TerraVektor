@@ -6,7 +6,138 @@ import { fileURLToPath } from 'url';
 import { Buffer } from 'buffer';
 import jpeg from 'jpeg-js';
 import * as GeoTIFF from 'geotiff';
-import { resolveGeographicLocation, extractLocationName } from './src/features/semantic-search/parser/locationResolver.js';
+function extractLocationName(query: string): string | null {
+  if (!query || typeof query !== 'string') return null;
+  const lowerQuery = query.toLowerCase().trim();
+
+  const aliases: Record<string, string> = {
+    'pune': 'Pune', 'poona': 'Pune', 'mumbai': 'Mumbai', 'bombay': 'Mumbai',
+    'bengaluru': 'Bengaluru', 'bangalore': 'Bengaluru', 'delhi': 'Delhi',
+    'new delhi': 'Delhi', 'chennai': 'Chennai', 'madras': 'Chennai', 'jaipur': 'Jaipur'
+  };
+
+  for (const [alias, canonical] of Object.entries(aliases)) {
+    const pattern = new RegExp(`\\b${alias}\\b`, 'i');
+    if (pattern.test(lowerQuery)) {
+      return canonical;
+    }
+  }
+
+  const prepositionPattern = /(?:around|near|in|at|surrounding|of)\s+(?:the\s+(?:region|area|city|zone)\s+of\s+|the\s+)?([A-Za-z0-9\s,\.-]+?)(?=\s+(?:between|from|during|since|before|after|to|until|with|where|having|for|\d{4}|$)|[,\.\?!]|$)/i;
+  const match = query.match(prepositionPattern);
+  if (match && match[1]) {
+    let loc = match[1].trim().replace(/\s+(?:between|from|to|until|during|with)$/i, '').trim();
+    if (loc.length > 1) return loc;
+  }
+
+  const verbPattern = /(?:compare|investigate|analyze|examine|search|for)\s+([A-Za-z0-9\s,\.-]+?)(?=\s+(?:between|from|during|since|before|after|to|until|with|\d{4}|$)|[,\.\?!]|$)/i;
+  const verbMatch = query.match(verbPattern);
+  if (verbMatch && verbMatch[1]) {
+    let loc = verbMatch[1].trim();
+    if (!/^(?:satellite|imagery|images|scenes|changes|spectral|vegetation|built-up|construction)$/i.test(loc)) {
+      return loc;
+    }
+  }
+
+  return null;
+}
+
+let externalResolveGeographicLocation: ((query: string) => Promise<any>) | null = null;
+try {
+  const mod = await import('./src/features/semantic-search/parser/locationResolver.js');
+  externalResolveGeographicLocation = mod.resolveGeographicLocation;
+} catch (e) {
+  console.log('[LocationResolver] Dynamic import not available in current runtime, using built-in geocoding');
+}
+
+async function fallbackResolveLocation(rawQuery: string): Promise<any> {
+  const trimmed = rawQuery.trim();
+  const aoiPresets: Record<string, [number, number, number, number]> = {
+    'pune': [73.70, 18.40, 74.05, 18.70],
+    'mumbai': [72.75, 18.90, 73.10, 19.25],
+    'bengaluru': [77.45, 12.85, 77.75, 13.10],
+    'delhi': [76.90, 28.45, 77.35, 28.85],
+    'chennai': [80.10, 12.90, 80.35, 13.20],
+    'jaipur': [75.65, 26.80, 75.95, 27.05]
+  };
+
+  const lower = trimmed.toLowerCase();
+  for (const [city, bbox] of Object.entries(aoiPresets)) {
+    if (lower.includes(city)) {
+      const center = { lat: (bbox[1] + bbox[3]) / 2, lon: (bbox[0] + bbox[2]) / 2 };
+      const capCity = city.charAt(0).toUpperCase() + city.slice(1);
+      const locObj = {
+        name: capCity,
+        displayName: `${capCity}, India`,
+        country: 'India',
+        countryCode: 'IN',
+        bbox,
+        center,
+        source: 'preset',
+        confidence: 'high' as const
+      };
+      return {
+        status: 'resolved',
+        query: trimmed,
+        location: locObj,
+        locationText: trimmed,
+        candidates: [locObj]
+      };
+    }
+  }
+
+  try {
+    const encoded = encodeURIComponent(trimmed);
+    const resp = await fetch(`https://nominatim.openstreetmap.org/search?q=${encoded}&format=jsonv2&addressdetails=1&limit=5`, {
+      headers: { 'Accept': 'application/json', 'User-Agent': 'TerraVektor-Geocoding-Resolver/1.0' },
+      signal: AbortSignal.timeout(5000)
+    });
+    if (resp.ok) {
+      const data = await resp.json();
+      if (Array.isArray(data) && data.length > 0) {
+        const item = data[0];
+        const lat = parseFloat(item.lat);
+        const lon = parseFloat(item.lon);
+        let bbox: [number, number, number, number] = [lon - 0.05, lat - 0.05, lon + 0.05, lat + 0.05];
+        if (item.boundingbox && item.boundingbox.length === 4) {
+          bbox = [parseFloat(item.boundingbox[2]), parseFloat(item.boundingbox[0]), parseFloat(item.boundingbox[3]), parseFloat(item.boundingbox[1])];
+        }
+        const locObj = {
+          name: item.name || item.display_name.split(',')[0],
+          displayName: item.display_name,
+          country: item.address?.country,
+          countryCode: item.address?.country_code?.toUpperCase(),
+          center: { lat, lon },
+          bbox,
+          confidence: 'high' as const,
+          source: 'nominatim'
+        };
+        return {
+          status: 'resolved',
+          query: trimmed,
+          location: locObj,
+          locationText: trimmed,
+          candidates: [locObj]
+        };
+      }
+    }
+  } catch (err) {
+    console.warn('[LocationResolver] Nominatim query failed:', err);
+  }
+
+  return { status: 'unresolved', query: trimmed, locationText: trimmed, message: 'Location not found' };
+}
+
+async function resolveGeographicLocation(rawQuery: string): Promise<any> {
+  if (externalResolveGeographicLocation) {
+    try {
+      return await externalResolveGeographicLocation(rawQuery);
+    } catch (e) {
+      console.warn('[LocationResolver] External resolver threw, using built-in fallback:', e);
+    }
+  }
+  return fallbackResolveLocation(rawQuery);
+}
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -304,7 +435,9 @@ async function startServer() {
     }
 
     try {
-      const result = await resolveGeographicLocation(rawQuery);
+      const result = resolveGeographicLocation
+        ? await resolveGeographicLocation(rawQuery)
+        : await fallbackResolveLocation(rawQuery);
       return res.json(result);
     } catch (err: any) {
       console.error('[API /api/location/resolve] Error:', err);
@@ -326,7 +459,9 @@ async function startServer() {
     }
 
     try {
-      const result = await resolveGeographicLocation(rawQuery);
+      const result = resolveGeographicLocation
+        ? await resolveGeographicLocation(rawQuery)
+        : await fallbackResolveLocation(rawQuery);
       return res.json(result);
     } catch (err: any) {
       console.error('[API /api/location/resolve POST] Error:', err);
@@ -1367,7 +1502,15 @@ async function startServer() {
       }
     }
 
-    // E. If upstream mirrors and CDSE are unreachable, generate realistic synthetic Sentinel-2 preview
+    // E. If upstream mirrors and CDSE are unreachable:
+    if (!isExplicitDemoMode(req)) {
+      return res.status(503).json({
+        success: false,
+        error: 'Sentinel-2 preview unavailable',
+        detail: `Live Copernicus Sentinel-2 preview could not be retrieved for product ${productId}.`
+      });
+    }
+
     const fallbackSvg = createDemoFallbackSvg(productId);
     res.setHeader('Content-Type', 'image/svg+xml');
     res.setHeader('X-Preview-Source', 'sentinel2_synthetic_preview');

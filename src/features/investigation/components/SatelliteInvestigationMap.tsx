@@ -16,14 +16,14 @@ import {
   Plus,
   Minus,
   RotateCcw,
-  Sparkles
+  Loader2,
+  AlertTriangle
 } from 'lucide-react';
 import { format } from 'date-fns';
 import { BuiltUpAnalysisResult, ChangeAnalysisResult, CandidateRegion } from '../../../types';
 import { MapColorMode, MAP_COLOR_MODES } from '../../../types/mapModes';
 import { MapColorFilters, getMapColorFilterStyle } from '../../../components/MapColorFilters';
 import { MapColorModeSelector } from '../../../components/MapColorModeSelector';
-import { DEMO_BEFORE_AFTER, DEMO_IMAGERY_CONFIG } from '../config/demoImageryConfig';
 
 export interface SceneSummary {
   id: string;
@@ -81,8 +81,11 @@ export const SatelliteInvestigationMap: React.FC<SatelliteInvestigationMapProps>
   const [showAoiBoundary, setShowAoiBoundary] = useState<boolean>(true);
   const [activeBaseLayer, setActiveBaseLayer] = useState<'satellite' | 'osm'>('satellite');
 
-  // Temporary Video Demo State (Driven by DEMO_BEFORE_AFTER feature flag)
-  const [useDemoImagery, setUseDemoImagery] = useState<boolean>(DEMO_BEFORE_AFTER);
+  // Loading and error states for real Sentinel-2 imagery
+  const [isBeforeLoading, setIsBeforeLoading] = useState<boolean>(true);
+  const [beforeError, setBeforeError] = useState<boolean>(false);
+  const [isAfterLoading, setIsAfterLoading] = useState<boolean>(true);
+  const [afterError, setAfterError] = useState<boolean>(false);
 
   // Extract candidate regions if built-up analysis
   const builtUpAnalysis = analysis && 'classification' in analysis && analysis.classification === 'built_up_change' 
@@ -245,35 +248,46 @@ export const SatelliteInvestigationMap: React.FC<SatelliteInvestigationMapProps>
       ? L.latLngBounds([afterScene.bbox[1], afterScene.bbox[0]], [afterScene.bbox[3], afterScene.bbox[2]])
       : aoiBounds;
 
-    // TEMPORARY DEMO IMAGERY FOR VIDEO PRESENTATION
-    const isDemoVisualActive = DEMO_BEFORE_AFTER && useDemoImagery;
+    const beforeUrl = beforeScene.preview_url || `/api/sentinel2/preview/${beforeScene.id}`;
+    const afterUrl = afterScene.preview_url || `/api/sentinel2/preview/${afterScene.id}`;
 
-    const effectiveBeforeUrl = isDemoVisualActive
-      ? DEMO_IMAGERY_CONFIG.beforeUrl
-      : (beforeScene.preview_url || `/api/sentinel2/preview/${beforeScene.id}`);
+    setIsBeforeLoading(true);
+    setBeforeError(false);
+    setIsAfterLoading(true);
+    setAfterError(false);
 
-    const effectiveAfterUrl = isDemoVisualActive
-      ? DEMO_IMAGERY_CONFIG.afterUrl
-      : (afterScene.preview_url || `/api/sentinel2/preview/${afterScene.id}`);
-
-    // Pin demo imagery to AOI bounds for unified geometric comparison
-    const effectiveBeforeBounds = isDemoVisualActive ? aoiBounds : beforeBounds;
-    const effectiveAfterBounds = isDemoVisualActive ? aoiBounds : afterBounds;
-
-    const beforeOverlay = L.imageOverlay(effectiveBeforeUrl, effectiveBeforeBounds, {
+    const beforeOverlay = L.imageOverlay(beforeUrl, beforeBounds, {
       pane: 'beforePane',
       opacity: 0.95
     }).addTo(map);
+
+    beforeOverlay.on('load', () => {
+      setIsBeforeLoading(false);
+      setBeforeError(false);
+    });
+    beforeOverlay.on('error', () => {
+      setIsBeforeLoading(false);
+      setBeforeError(true);
+    });
     beforeOverlayRef.current = beforeOverlay;
 
-    const afterOverlay = L.imageOverlay(effectiveAfterUrl, effectiveAfterBounds, {
+    const afterOverlay = L.imageOverlay(afterUrl, afterBounds, {
       pane: 'afterPane',
       opacity: 0.95
     }).addTo(map);
+
+    afterOverlay.on('load', () => {
+      setIsAfterLoading(false);
+      setAfterError(false);
+    });
+    afterOverlay.on('error', () => {
+      setIsAfterLoading(false);
+      setAfterError(true);
+    });
     afterOverlayRef.current = afterOverlay;
 
     map.fitBounds(aoiBounds.pad(0.1), { duration: 0.6 });
-  }, [beforeScene, afterScene, aoiBbox, showAoiBoundary, useDemoImagery]);
+  }, [beforeScene, afterScene, aoiBbox, showAoiBoundary]);
 
   // Load Built-Up Change Mask Overlay
   useEffect(() => {
@@ -720,31 +734,28 @@ export const SatelliteInvestigationMap: React.FC<SatelliteInvestigationMapProps>
               <span className="hidden md:inline font-mono">{activeBaseLayer === 'satellite' ? 'Sat' : 'OSM'}</span>
             </button>
 
-            {/* Temporary Demo Video Mode Toggle (Active only when DEMO_BEFORE_AFTER flag is true) */}
-            {DEMO_BEFORE_AFTER && (
-              <button
-                type="button"
-                onClick={() => setUseDemoImagery(!useDemoImagery)}
-                className={`flex items-center space-x-1.5 px-2.5 py-1 rounded text-xs font-semibold transition-colors ${
-                  useDemoImagery
-                    ? 'bg-amber-100 text-amber-900 border border-amber-300 shadow-2xs'
-                    : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
-                }`}
-                title="Toggle between High-Clarity Demo Imagery (for video presentation) and Real Live Sentinel-2"
-              >
-                <Sparkles className={`w-3.5 h-3.5 ${useDemoImagery ? 'text-amber-600' : 'text-slate-400'}`} />
-                <span className="hidden sm:inline">{useDemoImagery ? 'Demo Visual' : 'Live S2'}</span>
-              </button>
+            {/* Real Sentinel-2 Imagery Loading Indicator */}
+            {(isBeforeLoading || isAfterLoading) && (
+              <div className="flex items-center space-x-1.5 px-2 py-1 rounded text-xs font-mono text-teal-800 bg-teal-50 border border-teal-200">
+                <Loader2 className="w-3 h-3 animate-spin text-teal-700" />
+                <span className="hidden sm:inline">Loading S2 Imagery...</span>
+              </div>
             )}
           </div>
         </div>
 
-        {/* TEMPORARY VIDEO DEMO BADGE (Active when DEMO_BEFORE_AFTER is enabled) */}
-        {DEMO_BEFORE_AFTER && useDemoImagery && (
-          <div className="absolute top-3 left-1/2 -translate-x-1/2 z-[1050] pointer-events-none">
-            <div className="bg-amber-500 text-slate-950 text-[10px] font-mono font-bold tracking-wider px-2.5 py-1 rounded shadow-md border border-amber-300 flex items-center gap-1.5 uppercase">
-              <span className="w-1.5 h-1.5 rounded-full bg-slate-950 animate-pulse" />
-              <span>{DEMO_IMAGERY_CONFIG.badgeText}</span>
+        {/* Sentinel-2 Imagery Error Warning Banner */}
+        {(beforeError || afterError) && (
+          <div className="absolute top-14 left-1/2 -translate-x-1/2 z-[1040] pointer-events-none">
+            <div className="bg-rose-950/90 text-rose-200 border border-rose-500/60 rounded px-3 py-1.5 text-xs font-mono flex items-center space-x-2 shadow-lg backdrop-blur-xs">
+              <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
+              <span>
+                {beforeError && afterError 
+                  ? 'Sentinel-2 preview unavailable for both scenes' 
+                  : beforeError 
+                  ? 'Baseline Sentinel-2 preview unavailable' 
+                  : 'Monitoring Sentinel-2 preview unavailable'}
+              </span>
             </div>
           </div>
         )}
@@ -801,10 +812,12 @@ export const SatelliteInvestigationMap: React.FC<SatelliteInvestigationMapProps>
             }`}
             title="Click to view 100% Before Scene"
           >
-            <span className="w-2 h-2 rounded-full bg-emerald-500 shrink-0" />
+            <span className={`w-2 h-2 rounded-full shrink-0 ${beforeError ? 'bg-rose-500' : isBeforeLoading ? 'bg-emerald-400 animate-pulse' : 'bg-emerald-500'}`} />
             <div className="text-left">
-              <div className="text-[10px] text-slate-300 font-sans font-semibold">
-                {DEMO_BEFORE_AFTER && useDemoImagery ? 'DEMO BEFORE (BASELINE)' : 'BEFORE BASELINE'}
+              <div className="text-[10px] text-slate-300 font-sans font-semibold flex items-center gap-1.5">
+                <span>BEFORE BASELINE</span>
+                {isBeforeLoading && <Loader2 className="w-2.5 h-2.5 animate-spin text-emerald-400" />}
+                {beforeError && <span className="text-rose-400 font-mono text-[9px]">(Unavailable)</span>}
               </div>
               <div className="text-[11px] font-bold text-white">
                 {format(new Date(beforeScene.acquisition_date), 'yyyy-MM-dd')}
@@ -824,14 +837,16 @@ export const SatelliteInvestigationMap: React.FC<SatelliteInvestigationMapProps>
             title="Click to view 100% After Scene"
           >
             <div className="text-right">
-              <div className="text-[10px] text-slate-300 font-sans font-semibold">
-                {DEMO_BEFORE_AFTER && useDemoImagery ? 'DEMO AFTER (CONSTRUCTION)' : 'AFTER MONITORING'}
+              <div className="text-[10px] text-slate-300 font-sans font-semibold flex items-center justify-end gap-1.5">
+                {afterError && <span className="text-rose-400 font-mono text-[9px]">(Unavailable)</span>}
+                {isAfterLoading && <Loader2 className="w-2.5 h-2.5 animate-spin text-sky-400" />}
+                <span>AFTER MONITORING</span>
               </div>
               <div className="text-[11px] font-bold text-white">
                 {format(new Date(afterScene.acquisition_date), 'yyyy-MM-dd')}
               </div>
             </div>
-            <span className="w-2 h-2 rounded-full bg-sky-500 shrink-0" />
+            <span className={`w-2 h-2 rounded-full shrink-0 ${afterError ? 'bg-rose-500' : isAfterLoading ? 'bg-sky-400 animate-pulse' : 'bg-sky-500'}`} />
           </button>
         </div>
 

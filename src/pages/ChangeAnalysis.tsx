@@ -14,11 +14,13 @@ import {
   Info,
   ExternalLink,
   CheckCircle2,
-  XCircle
+  XCircle,
+  FileDown
 } from 'lucide-react';
 import { searchSentinel2, analyzeSentinel2Change, getSentinel2PreviewUrl, getChangeMaskUrl } from '../services/api';
 import { Sentinel2Product, Sentinel2SearchResponse, ChangeAnalysisResult } from '../types';
 import { SatelliteInvestigationMap } from '../features/investigation/components/SatelliteInvestigationMap';
+import { exportAnalysisPdf } from '../utils/exportAnalysisPdf';
 import { format, subDays } from 'date-fns';
 
 export const ChangeAnalysis: React.FC = () => {
@@ -37,6 +39,28 @@ export const ChangeAnalysis: React.FC = () => {
   
   const [activeView, setActiveView] = useState<'before' | 'after' | 'change'>('before');
   const [changeMaskOpacity, setChangeMaskOpacity] = useState(0.7);
+  const [isExportingPdf, setIsExportingPdf] = useState(false);
+  const [exportSuccess, setExportSuccess] = useState(false);
+
+  const handleExportPdf = () => {
+    if (!analysisResult) return;
+    setIsExportingPdf(true);
+    try {
+      exportAnalysisPdf({
+        analysis: analysisResult,
+        beforeProduct,
+        afterProduct,
+        aoiBbox,
+        locationName: 'Pune Urban Region'
+      });
+      setExportSuccess(true);
+      setTimeout(() => setExportSuccess(false), 3000);
+    } catch (err) {
+      console.error('Failed to export analysis PDF summary:', err);
+    } finally {
+      setIsExportingPdf(false);
+    }
+  };
 
   // Load available Sentinel-2 products on mount
   useEffect(() => {
@@ -406,12 +430,28 @@ export const ChangeAnalysis: React.FC = () => {
       {/* Analysis Results */}
       {analysisResult && (
         <div className="bg-white rounded-lg p-5 border border-slate-200 shadow-xs space-y-4">
-          <div className="flex items-center justify-between border-b border-slate-200 pb-3">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-200 pb-3">
             <h2 className="text-sm font-bold uppercase tracking-wider text-slate-900 flex items-center">
               <Activity className="w-4 h-4 mr-2 text-teal-800" />
               Change Detection Results
             </h2>
             <div className="flex items-center space-x-2">
+              <button
+                type="button"
+                onClick={handleExportPdf}
+                disabled={isExportingPdf}
+                className="px-3 py-1.5 bg-teal-800 hover:bg-teal-900 text-white text-xs font-semibold rounded shadow-xs transition-colors flex items-center space-x-1.5 cursor-pointer disabled:opacity-50"
+                title="Export analysis metrics and findings as PDF summary"
+              >
+                {isExportingPdf ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                ) : exportSuccess ? (
+                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-300" />
+                ) : (
+                  <FileDown className="w-3.5 h-3.5" />
+                )}
+                <span>{isExportingPdf ? 'Exporting...' : exportSuccess ? 'PDF Downloaded' : 'Export PDF Summary'}</span>
+              </button>
               {getDataModeBadge(analysisResult.data_mode)}
               {analysisResult.data_mode === 'demo_fallback' && (
                 <span className="text-[10px] text-amber-700 font-mono flex items-center">
@@ -590,30 +630,48 @@ export const ChangeAnalysis: React.FC = () => {
             )}
           </div>
 
-          {/* External Links */}
-          <div className="flex items-center space-x-2 pt-1">
-            {beforeProduct && (
-              <a
-                href={beforeProduct.cdse_browser_url}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="px-3 py-1.5 bg-white hover:bg-slate-50 text-slate-700 text-xs rounded border border-slate-300 transition-colors flex items-center space-x-1 shadow-xs"
-              >
-                <ExternalLink className="w-3.5 h-3.5 text-slate-400" />
-                <span>Before in CDSE</span>
-              </a>
-            )}
-            {afterProduct && (
-              <a
-                href={afterProduct.cdse_browser_url}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="px-3 py-1.5 bg-white hover:bg-slate-50 text-slate-700 text-xs rounded border border-slate-300 transition-colors flex items-center space-x-1 shadow-xs"
-              >
-                <ExternalLink className="w-3.5 h-3.5 text-slate-400" />
-                <span>After in CDSE</span>
-              </a>
-            )}
+          {/* External Links & Export Actions */}
+          <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-200">
+            <div className="flex items-center space-x-2">
+              {beforeProduct && (
+                <a
+                  href={beforeProduct.cdse_browser_url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="px-3 py-1.5 bg-white hover:bg-slate-50 text-slate-700 text-xs rounded border border-slate-300 transition-colors flex items-center space-x-1 shadow-xs"
+                >
+                  <ExternalLink className="w-3.5 h-3.5 text-slate-400" />
+                  <span>Before in CDSE</span>
+                </a>
+              )}
+              {afterProduct && (
+                <a
+                  href={afterProduct.cdse_browser_url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="px-3 py-1.5 bg-white hover:bg-slate-50 text-slate-700 text-xs rounded border border-slate-300 transition-colors flex items-center space-x-1 shadow-xs"
+                >
+                  <ExternalLink className="w-3.5 h-3.5 text-slate-400" />
+                  <span>After in CDSE</span>
+                </a>
+              )}
+            </div>
+
+            <button
+              type="button"
+              onClick={handleExportPdf}
+              disabled={isExportingPdf}
+              className="px-3.5 py-1.5 bg-teal-800 hover:bg-teal-900 text-white text-xs font-semibold rounded shadow-xs transition-colors flex items-center space-x-1.5 cursor-pointer disabled:opacity-50"
+            >
+              {isExportingPdf ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              ) : exportSuccess ? (
+                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-300" />
+              ) : (
+                <FileDown className="w-3.5 h-3.5" />
+              )}
+              <span>{isExportingPdf ? 'Generating PDF...' : exportSuccess ? 'PDF Downloaded' : 'Export PDF Summary'}</span>
+            </button>
           </div>
         </div>
       )}
