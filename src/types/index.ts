@@ -210,11 +210,30 @@ export interface SemanticRetrievalRequest {
   query: string;
 }
 
+export interface TemporalScene {
+  productId: string;
+  productName: string;
+  acquisitionDate: string;
+  cloudCover: number;
+  tile: string;
+  platform: string;
+  previewUrl: string;
+  id?: string;
+  name?: string;
+  tile_id?: string;
+  acquisition_date?: string;
+  cloud_cover?: number;
+  bbox?: [number, number, number, number];
+  center?: [number, number];
+  data_mode?: string;
+}
+
 export interface SemanticRetrievalResponse {
   success: boolean;
   parsedQuery: ParsedQuery;
   beforeScene: any | null;
   afterScene: any | null;
+  temporalScenes?: TemporalScene[];
   analysis: ChangeAnalysisResult | BuiltUpAnalysisResult | null;
   error?: string;
   message?: string;

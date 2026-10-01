@@ -2407,6 +2407,73 @@ async function startServer() {
     }
   }
 
+  async function findTemporalScenes(
+    aoi: [number, number, number, number],
+    startDateStr: string,
+    endDateStr: string,
+    preferredTileId?: string,
+    explicitDemo: boolean = false,
+    knownBeforeScene?: any,
+    knownAfterScene?: any
+  ): Promise<any[]> {
+    const startTime = new Date(startDateStr).getTime();
+    const endTime = new Date(endDateStr).getTime();
+    if (isNaN(startTime) || isNaN(endTime) || endTime <= startTime) {
+      return [knownBeforeScene, knownAfterScene].filter(Boolean);
+    }
+
+    const totalDiffDays = Math.max(1, Math.round((endTime - startTime) / 86400000));
+
+    // Choose target slice count: 3 to 6 distributed observation points
+    let targetCount = 6;
+    if (totalDiffDays <= 60) {
+      targetCount = 3;
+    } else if (totalDiffDays <= 180) {
+      targetCount = 4;
+    } else if (totalDiffDays <= 365) {
+      targetCount = 5;
+    } else {
+      targetCount = 6;
+    }
+
+    // Generate distributed target dates across the temporal range
+    const intermediateDates: string[] = [];
+    for (let i = 1; i < targetCount - 1; i++) {
+      const frac = i / (targetCount - 1);
+      const t = startTime + frac * (endTime - startTime);
+      intermediateDates.push(new Date(t).toISOString().split('T')[0]);
+    }
+
+    // Query CDSE in parallel for intermediate dates preferring the same Sentinel-2 tile
+    const promises = intermediateDates.map(targetDate =>
+      findBestScene(aoi, targetDate, 30, explicitDemo, preferredTileId)
+    );
+
+    const intermediateResults = await Promise.all(promises);
+
+    // Collect all valid scenes, deduplicating by ID
+    const seenIds = new Set<string>();
+    const allScenes: any[] = [];
+
+    const candidatesToAdd = [
+      knownBeforeScene,
+      ...intermediateResults,
+      knownAfterScene
+    ].filter(Boolean);
+
+    for (const sc of candidatesToAdd) {
+      if (sc && sc.id && !seenIds.has(sc.id)) {
+        seenIds.add(sc.id);
+        allScenes.push(sc);
+      }
+    }
+
+    // Sort chronologically ascending
+    allScenes.sort((a, b) => new Date(a.acquisition_date).getTime() - new Date(b.acquisition_date).getTime());
+
+    return allScenes;
+  }
+
   app.post('/api/semantic-retrieval', async (req: Request, res: Response) => {
     const startTime = Date.now();
     try {
@@ -2471,6 +2538,7 @@ async function startServer() {
           parsedQuery,
           beforeScene,
           afterScene: null,
+          temporalScenes: [beforeScene],
           analysis: null,
           data_mode: explicitDemo ? 'demo_data' : 'no_scenes_found',
           error: 'No suitable Sentinel-2 scenes were found for this AOI and date range.',
@@ -2478,6 +2546,41 @@ async function startServer() {
           detail: 'No suitable Sentinel-2 scenes were found for this AOI and date range on Copernicus CDSE.'
         });
       }
+
+      // Discover real distributed temporal Sentinel-2 observations across the range (Target 3-6 scenes)
+      const temporalRawList = await findTemporalScenes(
+        parsedQuery.aoi,
+        parsedQuery.startDate,
+        parsedQuery.endDate,
+        beforeScene.tile_id,
+        explicitDemo,
+        beforeScene,
+        afterScene
+      );
+
+      // Default baseline & monitoring pair: earliest and latest suitable scenes from the real temporal sequence
+      const effectiveBeforeScene = temporalRawList[0] || beforeScene;
+      const effectiveAfterScene = temporalRawList.length > 1
+        ? temporalRawList[temporalRawList.length - 1]
+        : (afterScene || beforeScene);
+
+      const temporalScenes = temporalRawList.map((s: any) => ({
+        productId: s.id,
+        productName: s.name,
+        acquisitionDate: s.acquisition_date,
+        cloudCover: Number((s.cloud_cover ?? 0).toFixed(2)),
+        tile: s.tile_id || 'Unknown',
+        platform: s.platform || 'Sentinel-2',
+        previewUrl: s.preview_url || `/api/sentinel2/preview/${s.id}`,
+        id: s.id,
+        name: s.name,
+        acquisition_date: s.acquisition_date,
+        cloud_cover: Number((s.cloud_cover ?? 0).toFixed(2)),
+        tile_id: s.tile_id || 'Unknown',
+        bbox: s.bbox,
+        center: s.center,
+        data_mode: s.data_mode
+      }));
 
       // Call the appropriate analysis endpoint based on change type
       try {
@@ -2488,8 +2591,8 @@ async function startServer() {
         if (parsedQuery.changeType === 'construction' || parsedQuery.changeType === 'expansion' || parsedQuery.changeType === 'built_up') {
           // Use built-up change detection endpoint
           analysisRequestBody = {
-            before_product_id: beforeScene.id,
-            after_product_id: afterScene.id,
+            before_product_id: effectiveBeforeScene.id,
+            after_product_id: effectiveAfterScene.id,
             aoi_bbox: parsedQuery.aoi,
             ndbi_increase_threshold: 0.1,
             ndvi_decrease_threshold: -0.1,
@@ -2500,8 +2603,8 @@ async function startServer() {
         } else {
           // Use existing NDVI change analysis endpoint
           analysisRequestBody = {
-            before_product_id: beforeScene.id,
-            after_product_id: afterScene.id,
+            before_product_id: effectiveBeforeScene.id,
+            after_product_id: effectiveAfterScene.id,
             aoi_bbox: parsedQuery.aoi,
             method: 'ndvi_differencing' as const,
             demo_mode: explicitDemo
@@ -2523,8 +2626,9 @@ async function startServer() {
           return res.status(503).json({
             success: false,
             parsedQuery,
-            beforeScene,
-            afterScene,
+            beforeScene: effectiveBeforeScene,
+            afterScene: effectiveAfterScene,
+            temporalScenes,
             analysis: null,
             data_mode: 'processing_unavailable',
             error: 'Sentinel-2 processing unavailable',
@@ -2538,8 +2642,9 @@ async function startServer() {
         return res.json({
           success: true,
           parsedQuery,
-          beforeScene,
-          afterScene,
+          beforeScene: effectiveBeforeScene,
+          afterScene: effectiveAfterScene,
+          temporalScenes,
           analysis,
           data_mode: analysis.data_mode,
           execution_time_ms: Date.now() - startTime
@@ -2549,8 +2654,9 @@ async function startServer() {
         return res.status(503).json({
           success: false,
           parsedQuery,
-          beforeScene,
-          afterScene,
+          beforeScene: effectiveBeforeScene,
+          afterScene: effectiveAfterScene,
+          temporalScenes,
           analysis: null,
           data_mode: 'processing_unavailable',
           error: 'Sentinel-2 processing unavailable',

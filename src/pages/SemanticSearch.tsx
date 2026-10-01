@@ -18,11 +18,12 @@ import {
   Info,
   Maximize2
 } from 'lucide-react';
-import { semanticRetrieval } from '../services/api';
-import { SemanticRetrievalResponse, ParsedQuery, BuiltUpAnalysisResult, ChangeAnalysisResult } from '../types';
+import { semanticRetrieval, analyzeBuiltUpChanges, analyzeSentinel2Change } from '../services/api';
+import { SemanticRetrievalResponse, ParsedQuery, BuiltUpAnalysisResult, ChangeAnalysisResult, TemporalScene } from '../types';
 import { SatelliteInvestigationMap } from '../features/investigation/components/SatelliteInvestigationMap';
 import { InvestigationWorkspacePanel } from '../features/investigation/components/InvestigationWorkspacePanel';
 import { InvestigationRibbon } from '../features/investigation/components/InvestigationRibbon';
+import { TemporalEvidenceTimeline } from '../features/investigation/components/TemporalEvidenceTimeline';
 import { QueryClarification } from '../features/semantic-search/components/QueryClarification';
 import { parseQuery, parseQueryAsync, type QueryPlan } from '../features/semantic-search/parser';
 import { format } from 'date-fns';
@@ -32,6 +33,10 @@ export const SemanticSearch: React.FC = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [hasSearched, setHasSearched] = useState(false);
   const [result, setResult] = useState<SemanticRetrievalResponse | null>(null);
+  const [selectedBeforeScene, setSelectedBeforeScene] = useState<any | null>(null);
+  const [selectedAfterScene, setSelectedAfterScene] = useState<any | null>(null);
+  const [activeAnalysis, setActiveAnalysis] = useState<BuiltUpAnalysisResult | ChangeAnalysisResult | null>(null);
+  const [isReanalyzing, setIsReanalyzing] = useState<boolean>(false);
   const [selectedCandidateId, setSelectedCandidateId] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [queryPlan, setQueryPlan] = useState<QueryPlan | null>(null);
@@ -71,6 +76,9 @@ export const SemanticSearch: React.FC = () => {
         query: searchQuery
       });
       setResult(response);
+      setSelectedBeforeScene(response.beforeScene);
+      setSelectedAfterScene(response.afterScene);
+      setActiveAnalysis(response.analysis);
       
       if (response.parsedQuery) {
         // Sync local queryPlan with the authoritative backend parsed query
@@ -98,6 +106,52 @@ export const SemanticSearch: React.FC = () => {
       setErrorMessage(err.response?.data?.detail || err.response?.data?.message || err.message || 'Failed to process query');
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  const handleSelectPair = async (newBefore: TemporalScene, newAfter: TemporalScene) => {
+    setSelectedBeforeScene(newBefore);
+    setSelectedAfterScene(newAfter);
+    setSelectedCandidateId(null);
+    setIsReanalyzing(true);
+
+    try {
+      const aoi = result?.parsedQuery?.aoi || resolvedLocation?.bbox || [73.70, 18.40, 74.05, 18.70];
+      const changeType = result?.parsedQuery?.changeType || 'built_up';
+
+      const beforeId = newBefore.productId || newBefore.id;
+      const afterId = newAfter.productId || newAfter.id;
+
+      if (!beforeId || !afterId) return;
+
+      let newAnalysis: any = null;
+      if (changeType === 'construction' || changeType === 'expansion' || changeType === 'built_up') {
+        newAnalysis = await analyzeBuiltUpChanges(
+          beforeId,
+          afterId,
+          aoi,
+          0.1,
+          -0.1,
+          10
+        );
+      } else {
+        newAnalysis = await analyzeSentinel2Change(
+          beforeId,
+          afterId,
+          aoi,
+          'ndvi_differencing'
+        );
+      }
+
+      setActiveAnalysis(newAnalysis);
+
+      if (newAnalysis && 'candidates' in newAnalysis && newAnalysis.candidates?.length > 0) {
+        setSelectedCandidateId(newAnalysis.candidates[0].id);
+      }
+    } catch (err: any) {
+      console.error('Re-analysis failed for selected temporal pair:', err);
+    } finally {
+      setIsReanalyzing(false);
     }
   };
 
@@ -135,8 +189,12 @@ export const SemanticSearch: React.FC = () => {
     handleSearch(newQuery);
   };
 
-  const candidateList = result?.analysis && 'candidates' in result.analysis 
-    ? (result.analysis as any).candidates 
+  const effectiveBeforeScene = selectedBeforeScene || result?.beforeScene;
+  const effectiveAfterScene = selectedAfterScene || result?.afterScene;
+  const currentAnalysis = activeAnalysis || result?.analysis;
+
+  const candidateList = currentAnalysis && 'candidates' in currentAnalysis 
+    ? (currentAnalysis as any).candidates 
     : [];
 
   const selectedCandidate = candidateList.find((c: any) => c.id === selectedCandidateId) || null;
@@ -311,70 +369,82 @@ export const SemanticSearch: React.FC = () => {
       )}
 
       {/* 2. Investigation Ribbon (Section 2) */}
-      {result && result.beforeScene && result.afterScene && (
+      {result && effectiveBeforeScene && effectiveAfterScene && (
         <InvestigationRibbon
           currentStage={selectedCandidate ? 'explain' : 'detect'}
           aoiLabel={resolvedLocation?.displayName || result.parsedQuery?.location || 'Working AOI'}
           centroidCoords={[
-            (resolvedLocation?.center ? resolvedLocation.center.lon : (result.beforeScene.bbox ? (result.beforeScene.bbox[0] + result.beforeScene.bbox[2]) / 2 : 73.8567)),
-            (resolvedLocation?.center ? resolvedLocation.center.lat : (result.beforeScene.bbox ? (result.beforeScene.bbox[1] + result.beforeScene.bbox[3]) / 2 : 18.5204))
+            (resolvedLocation?.center ? resolvedLocation.center.lon : (effectiveBeforeScene.bbox ? (effectiveBeforeScene.bbox[0] + effectiveBeforeScene.bbox[2]) / 2 : 73.8567)),
+            (resolvedLocation?.center ? resolvedLocation.center.lat : (effectiveBeforeScene.bbox ? (effectiveBeforeScene.bbox[1] + effectiveBeforeScene.bbox[3]) / 2 : 18.5204))
           ]}
-          beforeDate={result.beforeScene.acquisition_date}
-          afterDate={result.afterScene.acquisition_date}
+          beforeDate={effectiveBeforeScene.acquisition_date || effectiveBeforeScene.acquisitionDate}
+          afterDate={effectiveAfterScene.acquisition_date || effectiveAfterScene.acquisitionDate}
           candidateCount={candidateList.length}
         />
       )}
 
+      {/* 2.5 Sentinel-2 Temporal Evidence Timeline (Multi-Temporal Observation Chain) */}
+      {result && result.temporalScenes && result.temporalScenes.length > 0 && (
+        <TemporalEvidenceTimeline
+          temporalScenes={result.temporalScenes}
+          selectedBeforeId={effectiveBeforeScene?.productId || effectiveBeforeScene?.id || null}
+          selectedAfterId={effectiveAfterScene?.productId || effectiveAfterScene?.id || null}
+          onSelectPair={handleSelectPair}
+          isReanalyzing={isReanalyzing}
+          isLoading={isLoading}
+        />
+      )}
+
       {/* 3. MAP-FIRST COCKPIT LAYOUT (Section 3: Map 72-75%, Evidence Spine 25-28%) */}
-      {result && result.beforeScene && result.afterScene && (
+      {result && effectiveBeforeScene && effectiveAfterScene && (
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-3.5 items-start">
           {/* THE MAP IS THE WORKSPACE (Left: ~73%) */}
           <div className="lg:col-span-8 xl:col-span-9 space-y-3">
             <SatelliteInvestigationMap
               beforeScene={{
-                id: result.beforeScene.id,
-                name: result.beforeScene.name,
-                acquisition_date: result.beforeScene.acquisition_date,
-                tile_id: result.beforeScene.tile_id,
-                cloud_cover: result.beforeScene.cloud_cover,
-                bbox: result.beforeScene.bbox,
-                data_mode: result.beforeScene.data_mode,
-                preview_url: `/api/sentinel2/preview/${result.beforeScene.id}`
+                id: effectiveBeforeScene.id || effectiveBeforeScene.productId,
+                name: effectiveBeforeScene.name || effectiveBeforeScene.productName,
+                acquisition_date: effectiveBeforeScene.acquisition_date || effectiveBeforeScene.acquisitionDate,
+                tile_id: effectiveBeforeScene.tile_id || effectiveBeforeScene.tile,
+                cloud_cover: effectiveBeforeScene.cloud_cover ?? effectiveBeforeScene.cloudCover,
+                bbox: effectiveBeforeScene.bbox,
+                data_mode: effectiveBeforeScene.data_mode,
+                preview_url: `/api/sentinel2/preview/${effectiveBeforeScene.id || effectiveBeforeScene.productId}`
               }}
               afterScene={{
-                id: result.afterScene.id,
-                name: result.afterScene.name,
-                acquisition_date: result.afterScene.acquisition_date,
-                tile_id: result.afterScene.tile_id,
-                cloud_cover: result.afterScene.cloud_cover,
-                bbox: result.afterScene.bbox,
-                data_mode: result.afterScene.data_mode,
-                preview_url: `/api/sentinel2/preview/${result.afterScene.id}`
+                id: effectiveAfterScene.id || effectiveAfterScene.productId,
+                name: effectiveAfterScene.name || effectiveAfterScene.productName,
+                acquisition_date: effectiveAfterScene.acquisition_date || effectiveAfterScene.acquisitionDate,
+                tile_id: effectiveAfterScene.tile_id || effectiveAfterScene.tile,
+                cloud_cover: effectiveAfterScene.cloud_cover ?? effectiveAfterScene.cloudCover,
+                bbox: effectiveAfterScene.bbox,
+                data_mode: effectiveAfterScene.data_mode,
+                preview_url: `/api/sentinel2/preview/${effectiveAfterScene.id || effectiveAfterScene.productId}`
               }}
               aoiBbox={result.parsedQuery?.aoi || resolvedLocation?.bbox || [73.70, 18.40, 74.05, 18.70]}
-              analysis={result.analysis}
+              analysis={currentAnalysis}
               selectedCandidateId={selectedCandidateId}
               onSelectCandidate={(id) => setSelectedCandidateId(id)}
             />
 
             {/* Bottom Analytical Metrics Strip */}
-            {result.analysis && (
+            {currentAnalysis && (
               <div className="bg-white border border-slate-200 rounded-md p-3 shadow-2xs text-xs">
                 <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 pb-2">
                   <div className="flex items-center space-x-2 font-mono">
                     <span className="font-bold text-slate-800">
-                      {'classification' in result.analysis && result.analysis.classification === 'built_up_change'
+                      {'classification' in currentAnalysis && currentAnalysis.classification === 'built_up_change'
                         ? 'Built-Up Index Differencing (NDBI / NDVI)'
                         : 'Vegetation Canopy Differencing (NDVI)'}
                     </span>
                     <span className="text-slate-300">&bull;</span>
                     <span className="text-teal-800 font-semibold">10m BOA Ground Resolution</span>
-                    {(result.analysis as any).metrics?.water_mask_applied && (
+                    {(currentAnalysis as any).metrics?.water_mask_applied && (
                       <>
                         <span className="text-slate-300">&bull;</span>
                         <span className="text-sky-700 font-semibold flex items-center gap-1">
                           <span className="w-1.5 h-1.5 rounded-full bg-sky-500 inline-block" />
-                          Water Mask Active ({(result.analysis as any).metrics?.water_percentage || 0}% Aquatic Excluded)
+                          Water Mask Active ({(currentAnalysis as any).metrics?.water_percentage || 0}% Aquatic Excluded)
                         </span>
                       </>
                     )}
@@ -383,8 +453,8 @@ export const SemanticSearch: React.FC = () => {
                   <div className="flex items-center space-x-2 text-[11px] font-mono">
                     <span className="text-slate-500">Processing Time:</span>
                     <span className="font-bold text-slate-800">
-                      {'processing_time_ms' in (result.analysis as any).metadata
-                        ? `${(result.analysis as any).metadata.processing_time_ms}ms`
+                      {'processing_time_ms' in (currentAnalysis as any).metadata
+                        ? `${(currentAnalysis as any).metadata.processing_time_ms}ms`
                         : '410ms'}
                     </span>
                   </div>
@@ -394,24 +464,24 @@ export const SemanticSearch: React.FC = () => {
                   <div className="bg-slate-50 p-2 rounded border border-slate-200">
                     <span className="text-[10px] text-slate-500 block font-sans">AOI Mean Canopy (Baseline)</span>
                     <span className="text-xs font-bold text-slate-800 mt-0.5 block">
-                      NDVI {(result.analysis as any).metrics?.mean_ndvi_before?.toFixed(3) || (result.analysis as any).before_ndvi_avg?.toFixed(3) || '0.380'}
+                      NDVI {(currentAnalysis as any).metrics?.mean_ndvi_before?.toFixed(3) || (currentAnalysis as any).before_ndvi_avg?.toFixed(3) || '0.380'}
                     </span>
                   </div>
 
                   <div className="bg-slate-50 p-2 rounded border border-slate-200">
                     <span className="text-[10px] text-slate-500 block font-sans">AOI Mean Canopy (Monitoring)</span>
                     <span className="text-xs font-bold text-slate-800 mt-0.5 block">
-                      NDVI {(result.analysis as any).metrics?.mean_ndvi_after?.toFixed(3) || (result.analysis as any).after_ndvi_avg?.toFixed(3) || '0.222'}
+                      NDVI {(currentAnalysis as any).metrics?.mean_ndvi_after?.toFixed(3) || (currentAnalysis as any).after_ndvi_avg?.toFixed(3) || '0.222'}
                     </span>
                   </div>
 
                   <div className="bg-slate-50 p-2 rounded border border-slate-200">
                     <span className="text-[10px] text-slate-500 block font-sans">AOI Mean Built-Up Shift</span>
                     <span className="text-xs font-bold text-amber-700 mt-0.5 block">
-                      {(result.analysis as any).metrics?.mean_ndbi_change !== undefined
-                        ? `${(result.analysis as any).metrics.mean_ndbi_change >= 0 ? '+' : ''}${(result.analysis as any).metrics.mean_ndbi_change.toFixed(3)}`
-                        : (result.analysis as any).metrics?.mean_ndbi_after !== undefined
-                        ? `+${((result.analysis as any).metrics.mean_ndbi_after - (result.analysis as any).metrics.mean_ndbi_before).toFixed(3)}`
+                      {(currentAnalysis as any).metrics?.mean_ndbi_change !== undefined
+                        ? `${(currentAnalysis as any).metrics.mean_ndbi_change >= 0 ? '+' : ''}${(currentAnalysis as any).metrics.mean_ndbi_change.toFixed(3)}`
+                        : (currentAnalysis as any).metrics?.mean_ndbi_after !== undefined
+                        ? `+${((currentAnalysis as any).metrics.mean_ndbi_after - (currentAnalysis as any).metrics.mean_ndbi_before).toFixed(3)}`
                         : '+0.266'}
                     </span>
                   </div>
@@ -419,9 +489,9 @@ export const SemanticSearch: React.FC = () => {
                   <div className="bg-slate-50 p-2 rounded border border-slate-200">
                     <span className="text-[10px] text-slate-500 block font-sans">AOI Landscape Change</span>
                     <span className="text-xs font-bold text-teal-800 mt-0.5 block">
-                      {(result.analysis as any).metrics?.change_percentage !== undefined
-                        ? `${(result.analysis as any).metrics.change_percentage}% land`
-                        : `${(result.analysis as any).change_percentage || '4.8'}% area`}
+                      {(currentAnalysis as any).metrics?.change_percentage !== undefined
+                        ? `${(currentAnalysis as any).metrics.change_percentage}% land`
+                        : `${(currentAnalysis as any).change_percentage || '4.8'}% area`}
                     </span>
                   </div>
                 </div>
@@ -451,30 +521,30 @@ export const SemanticSearch: React.FC = () => {
               candidate={selectedCandidate}
               candidatesList={candidateList}
               beforeScene={{
-                id: result.beforeScene.id,
-                name: result.beforeScene.name,
-                acquisition_date: result.beforeScene.acquisition_date,
-                tile_id: result.beforeScene.tile_id,
-                cloud_cover: result.beforeScene.cloud_cover,
-                bbox: result.beforeScene.bbox,
-                data_mode: result.beforeScene.data_mode,
-                preview_url: `/api/sentinel2/preview/${result.beforeScene.id}`
+                id: effectiveBeforeScene.id || effectiveBeforeScene.productId,
+                name: effectiveBeforeScene.name || effectiveBeforeScene.productName,
+                acquisition_date: effectiveBeforeScene.acquisition_date || effectiveBeforeScene.acquisitionDate,
+                tile_id: effectiveBeforeScene.tile_id || effectiveBeforeScene.tile,
+                cloud_cover: effectiveBeforeScene.cloud_cover ?? effectiveBeforeScene.cloudCover,
+                bbox: effectiveBeforeScene.bbox,
+                data_mode: effectiveBeforeScene.data_mode,
+                preview_url: `/api/sentinel2/preview/${effectiveBeforeScene.id || effectiveBeforeScene.productId}`
               }}
               afterScene={{
-                id: result.afterScene.id,
-                name: result.afterScene.name,
-                acquisition_date: result.afterScene.acquisition_date,
-                tile_id: result.afterScene.tile_id,
-                cloud_cover: result.afterScene.cloud_cover,
-                bbox: result.afterScene.bbox,
-                data_mode: result.afterScene.data_mode,
-                preview_url: `/api/sentinel2/preview/${result.afterScene.id}`
+                id: effectiveAfterScene.id || effectiveAfterScene.productId,
+                name: effectiveAfterScene.name || effectiveAfterScene.productName,
+                acquisition_date: effectiveAfterScene.acquisition_date || effectiveAfterScene.acquisitionDate,
+                tile_id: effectiveAfterScene.tile_id || effectiveAfterScene.tile,
+                cloud_cover: effectiveAfterScene.cloud_cover ?? effectiveAfterScene.cloudCover,
+                bbox: effectiveAfterScene.bbox,
+                data_mode: effectiveAfterScene.data_mode,
+                preview_url: `/api/sentinel2/preview/${effectiveAfterScene.id || effectiveAfterScene.productId}`
               }}
               onSelectCandidate={(id) => setSelectedCandidateId(id)}
               onClose={() => setSelectedCandidateId(null)}
-              dataMode={result.analysis?.data_mode}
-              limitations={(result.analysis as any)?.limitations}
-              source={result.analysis?.source}
+              dataMode={currentAnalysis?.data_mode}
+              limitations={(currentAnalysis as any)?.limitations}
+              source={currentAnalysis?.source}
             />
           </div>
         </div>
