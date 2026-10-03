@@ -305,6 +305,9 @@ export interface CandidateRegion {
   min_delta_ndvi?: number;
   max_delta_ndbi?: number;
   temporal_evidence?: CandidateTemporalEvidence;
+  persistence_status?: string;
+  persistence_rationale?: string;
+  review_status?: 'pending' | 'confirmed' | 'rejected' | 'needs_review';
 }
 
 // Built-up Change Analysis Types

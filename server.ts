@@ -1068,15 +1068,16 @@ async function startServer() {
 
       const odataFilterStr = filterConditions.join(' and ');
       const fetchTop = Math.max(limit, 5);
+      // Fast primary query without expensive OData relational join bottlenecks (returns in 1-3s)
       const cdseUrl = `https://catalogue.dataspace.copernicus.eu/odata/v1/Products?$filter=${encodeURIComponent(
         odataFilterStr
-      )}&$expand=Attributes&$top=${fetchTop}&$orderby=ContentDate/Start desc`;
+      )}&$top=${fetchTop}&$orderby=ContentDate/Start desc`;
 
       console.log(`[Sentinel-2 CDSE API] Final OData request URL immediately before fetch(): ${cdseUrl}`);
 
-      // 35 second timeout for CDSE catalog response
+      // 40 second timeout for CDSE catalog response
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 35000);
+      const timeoutId = setTimeout(() => controller.abort(), 40000);
 
       let cdseData: any = null;
       let upstreamError: string | null = null;
@@ -1101,6 +1102,30 @@ async function startServer() {
 
         if (response.ok) {
           cdseData = await response.json();
+          // Hydrate attributes for returned products in parallel (each item takes ~800ms)
+          if (cdseData && Array.isArray(cdseData.value) && cdseData.value.length > 0) {
+            await Promise.allSettled(
+              cdseData.value.map(async (item: any) => {
+                try {
+                  const attrRes = await fetch(
+                    `https://catalogue.dataspace.copernicus.eu/odata/v1/Products(${item.Id})?$expand=Attributes`,
+                    {
+                      headers: { 'Accept': 'application/json', 'User-Agent': 'TerraVektor-Satellite-Discovery/1.0' },
+                      signal: AbortSignal.timeout(4000)
+                    }
+                  );
+                  if (attrRes.ok) {
+                    const attrJson: any = await attrRes.json();
+                    if (Array.isArray(attrJson.Attributes)) {
+                      item.Attributes = attrJson.Attributes;
+                    }
+                  }
+                } catch {
+                  // Non-fatal attribute hydration: platform, tileId, and productType are parsed from item.Name
+                }
+              })
+            );
+          }
         } else {
           const errText = await response.text();
           upstreamError = `HTTP ${response.status}: ${errText.slice(0, 300)}`;
@@ -1108,79 +1133,28 @@ async function startServer() {
         }
       } catch (netErr: any) {
         clearTimeout(timeoutId);
-        console.warn(`[Sentinel-2 CDSE API] Primary query issue (${netErr.name || netErr.message}); attempting lightweight fast-path fallback query...`);
-
-        // Resilient Fallback: If primary query with $expand times out or aborts,
-        // execute the lightweight fast-path query without $expand=Attributes (typically returns in 1-2s)
-        try {
-          const fastUrl = `https://catalogue.dataspace.copernicus.eu/odata/v1/Products?$filter=${encodeURIComponent(
-            odataFilterStr
-          )}&$top=${fetchTop}&$orderby=ContentDate/Start desc`;
-
-          const fastRes = await fetch(fastUrl, {
-            method: 'GET',
-            headers: {
-              'Accept': 'application/json',
-              'User-Agent': 'TerraVektor-Satellite-Discovery/1.0'
-            },
-            signal: AbortSignal.timeout(12000)
-          });
-
-          if (fastRes.ok) {
-            cdseData = await fastRes.json();
-            // Hydrate attributes for returned products in parallel
-            if (cdseData && Array.isArray(cdseData.value)) {
-              await Promise.all(
-                cdseData.value.map(async (item: any) => {
-                  try {
-                    const attrRes = await fetch(
-                      `https://catalogue.dataspace.copernicus.eu/odata/v1/Products(${item.Id})/Attributes`,
-                      {
-                        headers: { 'Accept': 'application/json', 'User-Agent': 'TerraVektor-Satellite-Discovery/1.0' },
-                        signal: AbortSignal.timeout(4000)
-                      }
-                    );
-                    if (attrRes.ok) {
-                      const attrJson: any = await attrRes.json();
-                      if (Array.isArray(attrJson.value)) {
-                        item.Attributes = attrJson.value;
-                      }
-                    }
-                  } catch {
-                    // Non-fatal attribute hydration
-                  }
-                })
-              );
-            }
-          } else {
-            upstreamError = `HTTP ${fastRes.status}`;
-          }
-        } catch {
-          upstreamError = netErr.name === 'AbortError' ? 'Copernicus CDSE response timed out after 35s' : (netErr.message || String(netErr));
-          console.error(`[Sentinel-2 CDSE API] Network error during CDSE search:`, netErr);
-        }
+        upstreamError = netErr.name === 'AbortError' ? 'Copernicus CDSE response timed out after 40s' : (netErr.message || String(netErr));
+        console.warn(`[Sentinel-2 CDSE API] Query warning: ${upstreamError}`);
       }
 
       // Check if we can recover via cached observations for this AOI before failing
       if (!cdseData || !Array.isArray(cdseData.value) || cdseData.value.length === 0) {
-        if (!cdseData) {
-          for (const [key, cachedEntry] of sentinel2Cache.entries()) {
-            if (cachedEntry?.payload?.results?.length > 0) {
-              const cachedParams = cachedEntry.payload.query_params;
-              if (
-                cachedParams &&
-                bbox && cachedParams.bbox &&
-                Math.abs(cachedParams.bbox[0] - bbox[0]) < 0.6 &&
-                Math.abs(cachedParams.bbox[1] - bbox[1]) < 0.6
-              ) {
-                console.log(`[Sentinel-2 CDSE API] Upstream unavailable, recovering via cached result for area: ${key}`);
-                return res.json({
-                  ...cachedEntry.payload,
-                  source: 'Copernicus Data Space Ecosystem (Cached Fallback)',
-                  data_mode: 'cached',
-                  message: 'Live Copernicus CDSE timed out; recovered via cached observation catalogue.'
-                });
-              }
+        for (const [key, cachedEntry] of sentinel2Cache.entries()) {
+          if (cachedEntry?.payload?.results?.length > 0) {
+            const cachedParams = cachedEntry.payload.query_params;
+            if (
+              cachedParams &&
+              bbox && cachedParams.bbox &&
+              Math.abs(cachedParams.bbox[0] - bbox[0]) < 1.0 &&
+              Math.abs(cachedParams.bbox[1] - bbox[1]) < 1.0
+            ) {
+              console.log(`[Sentinel-2 CDSE API] Recovering via cached result for area: ${key}`);
+              return res.json({
+                ...cachedEntry.payload,
+                source: 'Copernicus Data Space Ecosystem (Cached Fallback)',
+                data_mode: 'cached',
+                message: 'Live Copernicus CDSE timed out; recovered via cached observation catalogue.'
+              });
             }
           }
         }

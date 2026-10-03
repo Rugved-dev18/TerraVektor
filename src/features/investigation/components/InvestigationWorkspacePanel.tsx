@@ -14,11 +14,14 @@ import {
   ArrowDown,
   Layers,
   Sparkles,
-  ChevronRight
+  ChevronRight,
+  Download,
+  FileSpreadsheet
 } from 'lucide-react';
 import { format } from 'date-fns';
 import { reviewCandidate } from '../../../services/api';
 import { CandidateRegion, TemporalScene, CandidateTemporalEvidence } from '../../../types';
+import { TemporalEvidenceLineChart } from './TemporalEvidenceLineChart';
 
 export interface SceneSummary {
   id: string;
@@ -62,6 +65,9 @@ export const InvestigationWorkspacePanel: React.FC<InvestigationWorkspacePanelPr
   const [reviewComment, setReviewComment] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submittedMessage, setSubmittedMessage] = useState<string | null>(null);
+  const [exportSuccess, setExportSuccess] = useState(false);
+  const [hoveredDate, setHoveredDate] = useState<string | null>(null);
+  const [temporalViewMode, setTemporalViewMode] = useState<'both' | 'chart' | 'timeline'>('both');
 
   const isDemo = dataMode === 'demo_data';
   const isConstruction = candidate?.type === 'possible_construction_candidate' || candidate?.type === 'new_construction_candidate';
@@ -223,6 +229,232 @@ export const InvestigationWorkspacePanel: React.FC<InvestigationWorkspacePanelPr
     }
   };
 
+  const escapeCsv = (val: any): string => {
+    if (val === null || val === undefined) return '';
+    const str = String(val);
+    if (str.includes(',') || str.includes('"') || str.includes('\n') || str.includes('\r')) {
+      return `"${str.replace(/"/g, '""')}"`;
+    }
+    return str;
+  };
+
+  const handleExportCsv = () => {
+    const lines: string[] = [];
+
+    // Header metadata comments
+    lines.push(`# Sentinel-2 Multi-Temporal Investigation Export`);
+    lines.push(`# Export Date: ${new Date().toISOString()}`);
+    lines.push(`# Baseline Scene: ${beforeScene.id} (${beforeScene.acquisition_date})`);
+    lines.push(`# Monitoring Scene: ${afterScene.id} (${afterScene.acquisition_date})`);
+    lines.push(`# Total Temporal Revisit Observations: ${temporalScenes.length}`);
+    if (candidate) {
+      lines.push(`# Inspected Candidate: ${candidate.id} (${candidate.display_name || candidate.type})`);
+      lines.push(`# Multi-Temporal Persistence: ${effectiveEvidence?.status || candidate.temporal_evidence?.status || 'N/A'}`);
+    }
+    lines.push(``);
+
+    // SECTION 1: CANDIDATE DETAILS
+    lines.push(`### CANDIDATE DETAILS`);
+    const candidateHeaders = [
+      'Candidate_ID',
+      'Display_Name',
+      'Classification_Type',
+      'Centroid_Latitude',
+      'Centroid_Longitude',
+      'Area_m2',
+      'Area_Hectares',
+      'Pixel_Count_10m',
+      'Mean_Baseline_NDVI',
+      'Mean_Monitoring_NDVI',
+      'Mean_Delta_NDVI',
+      'Mean_Baseline_NDBI',
+      'Mean_Monitoring_NDBI',
+      'Mean_Delta_NDBI',
+      'Persistence_Status',
+      'Persistence_Rationale',
+      'Usable_Observations_Count',
+      'Total_Observations_Count',
+      'Persistent_Observations_Count',
+      'Analyst_Review_Status',
+      'Analyst_Notes',
+      'Bounding_Box_West',
+      'Bounding_Box_South',
+      'Bounding_Box_East',
+      'Bounding_Box_North'
+    ];
+    lines.push(candidateHeaders.map(escapeCsv).join(','));
+
+    const candidatesToExport = candidate ? [candidate] : (candidatesList.length > 0 ? candidatesList : []);
+    for (const c of candidatesToExport) {
+      const cEvidence = c.id === candidate?.id ? effectiveEvidence : c.temporal_evidence;
+      const cStatus = cEvidence?.status || (c.persistence_status ? c.persistence_status.toUpperCase() : 'PENDING');
+      const cRationale = cEvidence?.persistence_rationale || c.persistence_rationale || '';
+      const cUsable = cEvidence?.usable_observations ?? '';
+      const cTotal = cEvidence?.observations ?? temporalScenes.length;
+      const cPersistent = cEvidence?.persistent_change_observations ?? '';
+      const cReview = c.id === candidate?.id ? reviewStatus : (c.review_status || 'pending');
+
+      const row = [
+        c.id,
+        c.display_name || (c.type === 'new_construction_candidate' ? 'Potential New Construction' : 'Built-up Change'),
+        c.type,
+        c.centroid ? c.centroid[1].toFixed(6) : '',
+        c.centroid ? c.centroid[0].toFixed(6) : '',
+        c.area_m2,
+        (c.area_m2 / 10000).toFixed(4),
+        c.pixel_count,
+        c.before_ndvi_mean !== undefined ? c.before_ndvi_mean.toFixed(4) : (c.before_ndvi?.toFixed(4) ?? ''),
+        c.after_ndvi_mean !== undefined ? c.after_ndvi_mean.toFixed(4) : (c.after_ndvi?.toFixed(4) ?? ''),
+        c.mean_delta_ndvi !== undefined ? c.mean_delta_ndvi.toFixed(4) : '',
+        c.before_ndbi_mean !== undefined ? c.before_ndbi_mean.toFixed(4) : (c.before_ndbi?.toFixed(4) ?? ''),
+        c.after_ndbi_mean !== undefined ? c.after_ndbi_mean.toFixed(4) : (c.after_ndbi?.toFixed(4) ?? ''),
+        c.mean_delta_ndbi !== undefined ? c.mean_delta_ndbi.toFixed(4) : '',
+        cStatus,
+        cRationale,
+        cUsable,
+        cTotal,
+        cPersistent,
+        cReview,
+        c.id === candidate?.id ? (reviewComment || '') : '',
+        c.bounding_box?.[0]?.toFixed(6) ?? '',
+        c.bounding_box?.[1]?.toFixed(6) ?? '',
+        c.bounding_box?.[2]?.toFixed(6) ?? '',
+        c.bounding_box?.[3]?.toFixed(6) ?? ''
+      ];
+      lines.push(row.map(escapeCsv).join(','));
+    }
+
+    lines.push(``);
+
+    // SECTION 2: TEMPORAL EVIDENCE SEQUENCE
+    lines.push(`### TEMPORAL EVIDENCE SEQUENCE`);
+    const temporalHeaders = [
+      'Candidate_ID',
+      'Observation_Index',
+      'Date_Month',
+      'Full_Acquisition_Date',
+      'Sentinel_Platform',
+      'Scene_Product_ID',
+      'Scene_Product_Name',
+      'Cloud_Cover_Pct',
+      'NDVI_Vegetation',
+      'NDBI_BuiltUp',
+      'NDWI_Water',
+      'Delta_NDVI_vs_Baseline',
+      'Delta_NDBI_vs_Baseline',
+      'Water_Mask_Status',
+      'Usable_For_Persistence',
+      'Change_Signal',
+      'Valid_Pixels',
+      'Total_Pixels',
+      'Quality_Assessment_Notes'
+    ];
+    lines.push(temporalHeaders.map(escapeCsv).join(','));
+
+    if (candidate && effectiveEvidence && effectiveEvidence.observations_sequence.length > 0) {
+      effectiveEvidence.observations_sequence.forEach((obs, idx) => {
+        const row = [
+          candidate.id,
+          idx + 1,
+          obs.date,
+          obs.full_date,
+          obs.platform,
+          obs.scene_id,
+          obs.scene_name,
+          obs.cloud_cover !== undefined ? obs.cloud_cover.toFixed(1) : '',
+          obs.ndvi !== undefined ? obs.ndvi.toFixed(4) : '',
+          obs.ndbi !== undefined ? obs.ndbi.toFixed(4) : '',
+          obs.ndwi !== undefined ? obs.ndwi.toFixed(4) : '',
+          obs.delta_ndvi !== undefined ? obs.delta_ndvi.toFixed(4) : '',
+          obs.delta_ndbi !== undefined ? obs.delta_ndbi.toFixed(4) : '',
+          obs.water_mask_status,
+          obs.usable ? 'YES' : 'NO',
+          obs.change_signal,
+          obs.valid_pixels,
+          obs.total_pixels,
+          obs.unusable_reason || (obs.usable ? 'Passed cloud and water masking criteria' : '')
+        ];
+        lines.push(row.map(escapeCsv).join(','));
+      });
+    } else if (temporalScenes && temporalScenes.length > 0) {
+      temporalScenes.forEach((s, idx) => {
+        const row = [
+          candidate ? candidate.id : 'AOI_MONITORING',
+          idx + 1,
+          s.acquisitionDate.slice(0, 7),
+          s.acquisitionDate.slice(0, 10),
+          s.platform || 'Sentinel-2',
+          s.productId,
+          s.productName,
+          s.cloudCover.toFixed(1),
+          '',
+          '',
+          '',
+          '',
+          '',
+          'land',
+          s.cloudCover <= 35 ? 'YES' : 'NO',
+          idx === 0 ? 'baseline' : 'observation',
+          '',
+          '',
+          s.cloudCover > 35 ? `High cloud cover (${s.cloudCover.toFixed(1)}%)` : 'Clear observation'
+        ];
+        lines.push(row.map(escapeCsv).join(','));
+      });
+    }
+
+    // SECTION 3: ALL DETECTED CANDIDATES (context table if a single candidate is selected and multiple candidates exist)
+    if (candidate && candidatesList.length > 1) {
+      lines.push(``);
+      lines.push(`### ALL DETECTED CANDIDATES IN AOI`);
+      const allHeaders = [
+        'Candidate_ID',
+        'Type',
+        'Centroid_Lat',
+        'Centroid_Lon',
+        'Area_m2',
+        'Area_ha',
+        'Pixel_Count',
+        'Mean_Delta_NDBI',
+        'Mean_Delta_NDVI',
+        'Persistence_Status'
+      ];
+      lines.push(allHeaders.map(escapeCsv).join(','));
+      for (const c of candidatesList) {
+        const cStatus = c.temporal_evidence?.status || (c.persistence_status ? c.persistence_status.toUpperCase() : 'PENDING');
+        lines.push([
+          c.id,
+          c.type,
+          c.centroid ? c.centroid[1].toFixed(6) : '',
+          c.centroid ? c.centroid[0].toFixed(6) : '',
+          c.area_m2,
+          (c.area_m2 / 10000).toFixed(4),
+          c.pixel_count,
+          c.mean_delta_ndbi.toFixed(4),
+          c.mean_delta_ndvi !== undefined ? c.mean_delta_ndvi.toFixed(4) : '',
+          cStatus
+        ].map(escapeCsv).join(','));
+      }
+    }
+
+    const csvContent = lines.join('\r\n');
+    const filename = `TerraVektor_Investigation_${candidate ? candidate.id : 'Candidates'}_${format(new Date(), 'yyyyMMdd_HHmmss')}.csv`;
+
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    link.style.display = 'none';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+
+    setExportSuccess(true);
+    setTimeout(() => setExportSuccess(false), 3500);
+  };
+
   const beforePlatform = beforeScene.name?.startsWith('S2A') ? 'S2A' : beforeScene.name?.startsWith('S2B') ? 'S2B' : 'S2';
   const afterPlatform = afterScene.name?.startsWith('S2A') ? 'S2A' : afterScene.name?.startsWith('S2B') ? 'S2B' : 'S2';
 
@@ -240,15 +472,31 @@ export const InvestigationWorkspacePanel: React.FC<InvestigationWorkspacePanelPr
           </span>
         </div>
 
-        {candidate && onClose && (
+        <div className="flex items-center space-x-2">
+          {candidate && onClose && (
+            <button
+              type="button"
+              onClick={onClose}
+              className="text-[11px] text-slate-500 hover:text-slate-900 underline font-mono"
+            >
+              All Candidates
+            </button>
+          )}
+
           <button
             type="button"
-            onClick={onClose}
-            className="text-[11px] text-slate-500 hover:text-slate-900 underline font-mono"
+            onClick={handleExportCsv}
+            className={`flex items-center space-x-1.5 px-2.5 py-1 text-[11px] font-mono font-medium rounded border transition-colors shadow-2xs ${
+              exportSuccess
+                ? 'bg-teal-50 border-teal-400 text-teal-900 font-semibold'
+                : 'border-slate-300 bg-white hover:bg-slate-50 text-slate-700 hover:text-teal-950 hover:border-teal-700'
+            }`}
+            title="Download temporal evidence sequence and candidate details as CSV"
           >
-            All Candidates
+            <Download className="w-3.5 h-3.5 text-teal-800" />
+            <span>{exportSuccess ? 'Downloaded CSV' : 'Export Results to CSV'}</span>
           </button>
-        )}
+        </div>
       </div>
 
       <div className="flex-1 overflow-y-auto p-3.5 space-y-4">
@@ -322,7 +570,18 @@ export const InvestigationWorkspacePanel: React.FC<InvestigationWorkspacePanelPr
           <div className="space-y-3">
             <div className="flex items-center justify-between text-xs font-semibold text-slate-800">
               <span>Detected Change Candidates ({candidatesList.length})</span>
-              <span className="text-[10px] text-slate-500 font-mono">Click to inspect</span>
+              <div className="flex items-center space-x-2">
+                <span className="text-[10px] text-slate-500 font-mono">Click to inspect</span>
+                <button
+                  type="button"
+                  onClick={handleExportCsv}
+                  className="flex items-center space-x-1 px-1.5 py-0.5 rounded text-[10px] font-mono text-teal-900 bg-teal-50 hover:bg-teal-100 border border-teal-200 transition-colors"
+                  title="Export all candidates to CSV"
+                >
+                  <Download className="w-3 h-3 text-teal-800" />
+                  <span>Export CSV</span>
+                </button>
+              </div>
             </div>
 
             {candidatesList.length > 0 ? (
@@ -491,15 +750,26 @@ export const InvestigationWorkspacePanel: React.FC<InvestigationWorkspacePanelPr
                       TEMPORAL EVIDENCE
                     </span>
                   </div>
-                  <span className={`text-[10px] font-mono px-2 py-0.5 rounded font-bold uppercase ${
-                    effectiveEvidence.status === 'PERSISTENT'
-                      ? 'bg-emerald-100 text-emerald-900 border border-emerald-300'
-                      : effectiveEvidence.status === 'TRANSIENT'
-                      ? 'bg-amber-100 text-amber-900 border border-amber-300'
-                      : 'bg-slate-200 text-slate-800 border border-slate-300'
-                  }`}>
-                    {effectiveEvidence.status}
-                  </span>
+                  <div className="flex items-center space-x-2">
+                    <button
+                      type="button"
+                      onClick={handleExportCsv}
+                      className="flex items-center space-x-1 px-1.5 py-0.5 rounded text-[10px] font-mono text-teal-900 bg-white hover:bg-teal-50 border border-slate-300 hover:border-teal-600 transition-colors"
+                      title="Export temporal evidence sequence and candidate metrics to CSV"
+                    >
+                      <Download className="w-3 h-3 text-teal-800" />
+                      <span>Export CSV</span>
+                    </button>
+                    <span className={`text-[10px] font-mono px-2 py-0.5 rounded font-bold uppercase ${
+                      effectiveEvidence.status === 'PERSISTENT'
+                        ? 'bg-emerald-100 text-emerald-900 border border-emerald-300'
+                        : effectiveEvidence.status === 'TRANSIENT'
+                        ? 'bg-amber-100 text-amber-900 border border-amber-300'
+                        : 'bg-slate-200 text-slate-800 border border-slate-300'
+                    }`}>
+                      {effectiveEvidence.status}
+                    </span>
+                  </div>
                 </div>
 
                 <div className="grid grid-cols-3 gap-1.5 text-xs font-mono bg-white p-2 rounded border border-slate-200">
@@ -522,68 +792,131 @@ export const InvestigationWorkspacePanel: React.FC<InvestigationWorkspacePanelPr
                   <strong className="font-mono text-slate-900">{effectiveEvidence.status}</strong> &bull; {effectiveEvidence.persistence_rationale}
                 </div>
 
-                {/* COMPACT TIMELINE (Requirement 7) */}
-                <div className="space-y-1 pt-1">
-                  <div className="text-[10px] font-bold uppercase tracking-wider text-slate-600 font-mono flex items-center justify-between">
-                    <span>Compact Timeline</span>
-                    <span className="text-[9px] font-normal text-slate-400 lowercase font-mono">date &bull; actual measurements</span>
+                {/* VIEW MODE TOGGLE (Both / Chart / Timeline) */}
+                <div className="flex items-center justify-between pt-0.5">
+                  <div className="text-[10px] font-bold uppercase tracking-wider text-slate-600 font-mono flex items-center space-x-1">
+                    <span>Evidence Sequence</span>
+                    <span className="text-[9px] text-slate-400 font-normal lowercase font-mono">&bull; spectral trajectory</span>
                   </div>
 
-                  <div className="space-y-1 bg-white p-2 rounded border border-slate-200 font-mono text-[11px]">
-                    {effectiveEvidence.observations_sequence.map((obs, oIdx) => {
-                      const dotColor = !obs.usable
-                        ? 'text-slate-400'
-                        : obs.change_signal === 'changed'
-                        ? 'text-amber-600'
-                        : obs.change_signal === 'baseline'
-                        ? 'text-emerald-600'
-                        : obs.change_signal === 'reversal'
-                        ? 'text-sky-600'
-                        : 'text-slate-600';
-
-                      return (
-                        <div
-                          key={obs.scene_id || oIdx}
-                          className={`flex items-center justify-between py-1 px-1.5 rounded transition-colors ${
-                            !obs.usable ? 'bg-slate-50/70 text-slate-400' : 'hover:bg-slate-50'
-                          }`}
-                        >
-                          <div className="flex items-center space-x-2">
-                            <span className="font-bold text-slate-800">{obs.date}</span>
-                            <span className={`text-sm leading-none ${dotColor}`}>●</span>
-                            <span className="text-[10px] text-slate-600">
-                              NDVI: <strong className="text-slate-800">{obs.usable ? obs.ndvi.toFixed(3) : '—'}</strong>
-                            </span>
-                            <span className="text-[10px] text-slate-600">
-                              NDBI: <strong className="text-slate-800">{obs.usable ? obs.ndbi.toFixed(3) : '—'}</strong>
-                            </span>
-                          </div>
-
-                          <div className="flex items-center space-x-2 text-[10px]">
-                            <span className={`px-1 py-0.2 rounded text-[9px] ${
-                              obs.water_mask_status === 'land' ? 'bg-emerald-50 text-emerald-800' : 'bg-sky-50 text-sky-800'
-                            }`}>
-                              {obs.water_mask_status === 'land' ? 'Land' : 'Water'}
-                            </span>
-                            <span className={`px-1.5 py-0.2 rounded text-[9px] font-bold uppercase ${
-                              !obs.usable
-                                ? 'bg-slate-100 text-slate-500'
-                                : obs.change_signal === 'changed'
-                                ? 'bg-amber-100 text-amber-900'
-                                : obs.change_signal === 'baseline'
-                                ? 'bg-emerald-100 text-emerald-900'
-                                : obs.change_signal === 'reversal'
-                                ? 'bg-sky-100 text-sky-900'
-                                : 'bg-slate-100 text-slate-700'
-                            }`}>
-                              {!obs.usable ? `Cloud (${obs.cloud_cover.toFixed(0)}%)` : obs.change_signal}
-                            </span>
-                          </div>
-                        </div>
-                      );
-                    })}
+                  <div className="flex items-center p-0.5 bg-slate-200/70 rounded text-[9px] font-mono">
+                    <button
+                      type="button"
+                      onClick={() => setTemporalViewMode('both')}
+                      className={`px-1.5 py-0.5 rounded transition-colors ${
+                        temporalViewMode === 'both'
+                          ? 'bg-white text-teal-950 font-bold shadow-2xs'
+                          : 'text-slate-600 hover:text-slate-900'
+                      }`}
+                    >
+                      Split View
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setTemporalViewMode('chart')}
+                      className={`px-1.5 py-0.5 rounded transition-colors ${
+                        temporalViewMode === 'chart'
+                          ? 'bg-white text-teal-950 font-bold shadow-2xs'
+                          : 'text-slate-600 hover:text-slate-900'
+                      }`}
+                    >
+                      Chart
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setTemporalViewMode('timeline')}
+                      className={`px-1.5 py-0.5 rounded transition-colors ${
+                        temporalViewMode === 'timeline'
+                          ? 'bg-white text-teal-950 font-bold shadow-2xs'
+                          : 'text-slate-600 hover:text-slate-900'
+                      }`}
+                    >
+                      Timeline
+                    </button>
                   </div>
                 </div>
+
+                {/* RECHARTS LINE CHART: Visualizing NDVI and NDBI Evolution Alongside Candidate Timeline */}
+                {(temporalViewMode === 'both' || temporalViewMode === 'chart') && (
+                  <TemporalEvidenceLineChart
+                    observationsSequence={effectiveEvidence.observations_sequence}
+                    candidateId={candidate.id}
+                    activeDate={hoveredDate}
+                    onHoverDate={setHoveredDate}
+                  />
+                )}
+
+                {/* COMPACT TIMELINE (Requirement 7) */}
+                {(temporalViewMode === 'both' || temporalViewMode === 'timeline') && (
+                  <div className="space-y-1">
+                    <div className="text-[10px] font-bold uppercase tracking-wider text-slate-600 font-mono flex items-center justify-between">
+                      <span>Timeline Measurements</span>
+                      <span className="text-[9px] font-normal text-slate-400 lowercase font-mono">date &bull; actual BOA reflectance</span>
+                    </div>
+
+                    <div className="space-y-1 bg-white p-2 rounded border border-slate-200 font-mono text-[11px]">
+                      {effectiveEvidence.observations_sequence.map((obs, oIdx) => {
+                        const isHovered = hoveredDate === obs.date || hoveredDate === obs.full_date;
+                        const dotColor = !obs.usable
+                          ? 'text-slate-400'
+                          : obs.change_signal === 'changed'
+                          ? 'text-amber-600'
+                          : obs.change_signal === 'baseline'
+                          ? 'text-emerald-600'
+                          : obs.change_signal === 'reversal'
+                          ? 'text-sky-600'
+                          : 'text-slate-600';
+
+                        return (
+                          <div
+                            key={obs.scene_id || oIdx}
+                            onMouseEnter={() => setHoveredDate(obs.date)}
+                            onMouseLeave={() => setHoveredDate(null)}
+                            className={`flex items-center justify-between py-1 px-1.5 rounded transition-all cursor-default ${
+                              isHovered
+                                ? 'bg-teal-50/90 ring-1 ring-teal-500/40 text-slate-900'
+                                : !obs.usable
+                                ? 'bg-slate-50/70 text-slate-400'
+                                : 'hover:bg-slate-50 text-slate-700'
+                            }`}
+                          >
+                            <div className="flex items-center space-x-2">
+                              <span className="font-bold text-slate-800">{obs.date}</span>
+                              <span className={`text-sm leading-none ${dotColor}`}>●</span>
+                              <span className="text-[10px] text-slate-600">
+                                NDVI: <strong className="text-slate-800">{obs.usable ? obs.ndvi.toFixed(3) : '—'}</strong>
+                              </span>
+                              <span className="text-[10px] text-slate-600">
+                                NDBI: <strong className="text-slate-800">{obs.usable ? obs.ndbi.toFixed(3) : '—'}</strong>
+                              </span>
+                            </div>
+
+                            <div className="flex items-center space-x-2 text-[10px]">
+                              <span className={`px-1 py-0.2 rounded text-[9px] ${
+                                obs.water_mask_status === 'land' ? 'bg-emerald-50 text-emerald-800' : 'bg-sky-50 text-sky-800'
+                              }`}>
+                                {obs.water_mask_status === 'land' ? 'Land' : 'Water'}
+                              </span>
+                              <span className={`px-1.5 py-0.2 rounded text-[9px] font-bold uppercase ${
+                                !obs.usable
+                                  ? 'bg-slate-100 text-slate-500'
+                                  : obs.change_signal === 'changed'
+                                  ? 'bg-amber-100 text-amber-900'
+                                  : obs.change_signal === 'baseline'
+                                  ? 'bg-emerald-100 text-emerald-900'
+                                  : obs.change_signal === 'reversal'
+                                  ? 'bg-sky-100 text-sky-900'
+                                  : 'bg-slate-100 text-slate-700'
+                              }`}>
+                                {!obs.usable ? `Cloud (${obs.cloud_cover.toFixed(0)}%)` : obs.change_signal}
+                              </span>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
               </div>
             )}
 
@@ -691,6 +1024,17 @@ export const InvestigationWorkspacePanel: React.FC<InvestigationWorkspacePanelPr
                   <span>Reject</span>
                 </button>
               </div>
+
+              {/* Export Full Evidence CSV Button */}
+              <button
+                type="button"
+                onClick={handleExportCsv}
+                className="w-full mt-1.5 py-1.5 px-2 rounded border border-slate-300 hover:border-teal-700 bg-slate-50 hover:bg-teal-50 text-slate-700 hover:text-teal-950 font-mono text-[11px] font-medium transition-colors flex items-center justify-center space-x-1.5 shadow-2xs"
+                title="Download temporal evidence sequence and candidate details as CSV"
+              >
+                <Download className="w-3.5 h-3.5 text-teal-800" />
+                <span>Export Results to CSV</span>
+              </button>
             </div>
 
             {/* Scientific Caveat Footnote */}
