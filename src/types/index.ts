@@ -242,6 +242,35 @@ export interface SemanticRetrievalResponse {
   execution_time_ms?: number;
 }
 
+export interface TemporalObservationEvidence {
+  date: string; // e.g. "2024-05"
+  full_date: string; // e.g. "2024-05-03"
+  scene_id: string;
+  scene_name: string;
+  platform?: string;
+  cloud_cover: number;
+  ndvi: number;
+  ndbi: number;
+  ndwi: number;
+  water_mask_status: 'land' | 'water';
+  valid_pixels: number;
+  total_pixels: number;
+  usable: boolean;
+  unusable_reason?: string;
+  change_signal: 'baseline' | 'changed' | 'normal' | 'reversal' | 'inconclusive';
+  delta_ndvi: number;
+  delta_ndbi: number;
+}
+
+export interface CandidateTemporalEvidence {
+  observations: number;
+  usable_observations: number;
+  persistent_change_observations: number;
+  status: 'PERSISTENT' | 'TRANSIENT' | 'INCONCLUSIVE';
+  persistence_rationale: string;
+  observations_sequence: TemporalObservationEvidence[];
+}
+
 // Candidate Region Definition for Built-up / Spectral Change Analysis
 export interface CandidateRegion {
   id: string;
@@ -275,6 +304,7 @@ export interface CandidateRegion {
   mean_delta_ndbi: number;
   min_delta_ndvi?: number;
   max_delta_ndbi?: number;
+  temporal_evidence?: CandidateTemporalEvidence;
 }
 
 // Built-up Change Analysis Types
