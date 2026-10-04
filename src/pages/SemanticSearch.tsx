@@ -333,10 +333,24 @@ export const SemanticSearch: React.FC = () => {
               <div className="p-2.5 bg-rose-50/80 border border-rose-200 rounded text-xs">
                 <div className="flex items-center space-x-1.5 text-[10px] font-mono font-bold text-rose-900 uppercase tracking-wider">
                   <AlertTriangle className="w-3.5 h-3.5 text-rose-600" />
-                  <span>LOCATION NOT FOUND</span>
+                  <span>
+                    {queryPlan?.errorType === 'rate_limited' || queryPlan?.locationError?.includes('rate limited') || errorMessage?.includes('rate limited')
+                      ? 'GEOCODING SERVICE RATE LIMITED'
+                      : queryPlan?.errorType === 'rejected' || queryPlan?.locationError?.includes('rejected') || errorMessage?.includes('rejected')
+                      ? 'GEOCODING SERVICE REJECTED'
+                      : queryPlan?.errorType === 'timeout' || queryPlan?.errorType === 'network_error' || queryPlan?.locationError?.includes('temporarily unavailable') || errorMessage?.includes('temporarily unavailable')
+                      ? 'GEOCODING SERVICE UNAVAILABLE'
+                      : 'LOCATION NOT FOUND'}
+                  </span>
                 </div>
                 <div className="text-xs text-rose-700 mt-1">
-                  Try adding a state or country.
+                  {queryPlan?.errorType === 'rate_limited' || queryPlan?.locationError?.includes('rate limited') || errorMessage?.includes('rate limited')
+                    ? 'Geocoding service rate limited'
+                    : queryPlan?.errorType === 'rejected' || queryPlan?.locationError?.includes('rejected') || errorMessage?.includes('rejected')
+                    ? 'Geocoding service rejected the request'
+                    : queryPlan?.errorType === 'timeout' || queryPlan?.errorType === 'network_error' || queryPlan?.locationError?.includes('temporarily unavailable') || errorMessage?.includes('temporarily unavailable')
+                    ? 'Geocoding service temporarily unavailable'
+                    : 'Location could not be resolved. Try adding a state or country.'}
                 </div>
               </div>
             ) : null}

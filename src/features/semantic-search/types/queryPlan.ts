@@ -18,6 +18,8 @@ export interface QueryPlan {
   locationDetails?: ResolvedLocation | null;
   locationStatus?: 'resolved' | 'ambiguous' | 'unresolved';
   locationCandidates?: ResolvedLocation[];
+  locationError?: string;
+  errorType?: 'rate_limited' | 'rejected' | 'timeout' | 'network_error';
   aoi: [number, number, number, number] | null;
   startDate: string | null;
   endDate: string | null;

@@ -404,11 +404,16 @@ export type LocationResolutionStatus = 'resolved' | 'ambiguous' | 'unresolved';
 export interface LocationResolutionResponse {
   status: LocationResolutionStatus;
   query: string;
+  resolved?: boolean;
+  source?: string;
+  bbox?: [number, number, number, number] | null;
+  center?: { lat: number; lon: number } | null;
   location?: ResolvedLocation;
   candidates?: ResolvedLocation[];
   locationText?: string;
   message?: string;
   cached?: boolean;
+  errorType?: 'rate_limited' | 'rejected' | 'timeout' | 'network_error';
   execution_time_ms?: number;
 }
 

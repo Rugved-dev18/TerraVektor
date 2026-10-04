@@ -220,9 +220,82 @@ export function areDistinctLocations(a: ResolvedLocation, b: ResolvedLocation): 
   ) {
     return true;
   }
+  const aName = a.name.toLowerCase();
+  const bName = b.name.toLowerCase();
+  if (aName === bName || aName.startsWith(bName) || bName.startsWith(aName)) {
+    if (a.placeType === 'city' || b.placeType === 'city' || a.placeType === 'administrative' || b.placeType === 'administrative') {
+      return false;
+    }
+  }
   const dist = getDistanceKm(a.center.lat, a.center.lon, b.center.lat, b.center.lon);
   return dist > 75;
 }
+
+export const INDIAN_CITY_STATE_MAP: Record<string, string> = {
+  nashik: 'Maharashtra',
+  nasik: 'Maharashtra',
+  pune: 'Maharashtra',
+  poona: 'Maharashtra',
+  nagpur: 'Maharashtra',
+  kolhapur: 'Maharashtra',
+  mumbai: 'Maharashtra',
+  bombay: 'Maharashtra',
+  thane: 'Maharashtra',
+  aurangabad: 'Maharashtra',
+  'chhatrapati sambhajinagar': 'Maharashtra',
+  solapur: 'Maharashtra',
+  amravati: 'Maharashtra',
+  nanded: 'Maharashtra',
+  sangli: 'Maharashtra',
+  jalgaon: 'Maharashtra',
+  akola: 'Maharashtra',
+  latur: 'Maharashtra',
+  dhule: 'Maharashtra',
+  ahmednagar: 'Maharashtra',
+  chandrapur: 'Maharashtra',
+  parbhani: 'Maharashtra',
+  bengaluru: 'Karnataka',
+  bangalore: 'Karnataka',
+  mysuru: 'Karnataka',
+  mysore: 'Karnataka',
+  hubli: 'Karnataka',
+  mangalore: 'Karnataka',
+  delhi: 'Delhi',
+  'new delhi': 'Delhi',
+  chennai: 'Tamil Nadu',
+  madras: 'Tamil Nadu',
+  coimbatore: 'Tamil Nadu',
+  madurai: 'Tamil Nadu',
+  jaipur: 'Rajasthan',
+  jodhpur: 'Rajasthan',
+  udaipur: 'Rajasthan',
+  kota: 'Rajasthan',
+  hyderabad: 'Telangana',
+  warangal: 'Telangana',
+  ahmedabad: 'Gujarat',
+  surat: 'Gujarat',
+  vadodara: 'Gujarat',
+  rajkot: 'Gujarat',
+  kolkata: 'West Bengal',
+  calcutta: 'West Bengal',
+  lucknow: 'Uttar Pradesh',
+  kanpur: 'Uttar Pradesh',
+  varanasi: 'Uttar Pradesh',
+  agra: 'Uttar Pradesh',
+  noida: 'Uttar Pradesh',
+  ghaziabad: 'Uttar Pradesh',
+  bhopal: 'Madhya Pradesh',
+  indore: 'Madhya Pradesh',
+  patna: 'Bihar',
+  chandigarh: 'Punjab',
+  amritsar: 'Punjab',
+  kochi: 'Kerala',
+  cochin: 'Kerala',
+  thiruvananthapuram: 'Kerala',
+  trivandrum: 'Kerala',
+  guwahati: 'Assam',
+  bhubaneswar: 'Odisha'
+};
 
 // In-Memory Cache
 interface CacheEntry {
@@ -318,26 +391,81 @@ function hasExplicitForeignContext(query: string): boolean {
   return NON_INDIA_COUNTRY_PATTERNS.some(p => p.test(query));
 }
 
-async function fetchNominatim(query: string, limit = 8): Promise<NominatimRawResult[]> {
+interface NominatimFetchOutcome {
+  status: number;
+  data: NominatimRawResult[];
+  error?: string;
+  errorType?: 'rate_limited' | 'rejected' | 'timeout' | 'network_error';
+}
+
+async function fetchNominatim(query: string, limit = 8): Promise<NominatimFetchOutcome> {
   await throttleNominatim();
   const encoded = encodeURIComponent(query);
   const url = `https://nominatim.openstreetmap.org/search?q=${encoded}&format=jsonv2&addressdetails=1&limit=${limit}`;
 
-  const res = await fetch(url, {
-    method: 'GET',
-    headers: {
-      'Accept': 'application/json',
-      'User-Agent': 'TerraVektor-Geocoding-Resolver/1.0 (contact: dhamdepritam@gmail.com; GIS Satellite Platform)'
-    },
-    signal: AbortSignal.timeout(7000)
-  });
+  try {
+    const res = await fetch(url, {
+      method: 'GET',
+      headers: {
+        'Accept': 'application/json',
+        'Accept-Language': 'en',
+        'User-Agent': 'TerraVektor/1.0 (Geospatial Investigation Platform)'
+      },
+      signal: AbortSignal.timeout(8000)
+    });
 
-  if (!res.ok) {
-    throw new Error(`Nominatim HTTP ${res.status}: ${res.statusText}`);
+    if (res.status === 429) {
+      console.warn(`[LocationResolver] query=${query} status=429 resultCount=0`);
+      return {
+        status: 429,
+        data: [],
+        error: 'Geocoding service rate limited',
+        errorType: 'rate_limited'
+      };
+    }
+
+    if (res.status === 403) {
+      console.warn(`[LocationResolver] query=${query} status=403 resultCount=0`);
+      return {
+        status: 403,
+        data: [],
+        error: 'Geocoding service rejected the request',
+        errorType: 'rejected'
+      };
+    }
+
+    if (!res.ok) {
+      console.warn(`[LocationResolver] query=${query} status=${res.status} resultCount=0`);
+      return {
+        status: res.status,
+        data: [],
+        error: `Geocoding service returned HTTP ${res.status}`,
+        errorType: 'network_error'
+      };
+    }
+
+    const data = await res.json();
+    const results = Array.isArray(data) ? data : [];
+    console.log(`[LocationResolver] query=${query} status=200 resultCount=${results.length}`);
+    return {
+      status: 200,
+      data: results
+    };
+  } catch (err: any) {
+    const isTimeout =
+      err?.name === 'TimeoutError' ||
+      err?.name === 'AbortError' ||
+      err?.message?.includes('timeout') ||
+      err?.message?.includes('aborted');
+
+    console.warn(`[LocationResolver] query=${query} status=timeout_or_network resultCount=0`);
+    return {
+      status: 0,
+      data: [],
+      error: 'Geocoding service temporarily unavailable',
+      errorType: isTimeout ? 'timeout' : 'network_error'
+    };
   }
-
-  const data = await res.json();
-  return Array.isArray(data) ? data : [];
 }
 
 function parseNominatimItem(item: NominatimRawResult): ResolvedLocation | null {
@@ -440,6 +568,7 @@ export async function resolveGeographicLocation(query: string): Promise<Location
   if (!trimmed) {
     return {
       status: 'unresolved',
+      resolved: false,
       query: trimmed,
       locationText: trimmed,
       message: 'Location query is empty.',
@@ -447,7 +576,40 @@ export async function resolveGeographicLocation(query: string): Promise<Location
     };
   }
 
-  // 1. Check in-memory cache
+  // 1. Client-Side Guard: Geocoding MUST remain strictly server-side
+  if (typeof window !== 'undefined') {
+    try {
+      const res = await fetch(`/api/location/resolve?q=${encodeURIComponent(trimmed)}`, {
+        headers: { 'Accept': 'application/json' }
+      });
+      if (res.ok) {
+        const data: LocationResolutionResponse = await res.json();
+        return data;
+      }
+      const errJson = await res.json().catch(() => ({}));
+      return {
+        status: 'unresolved',
+        resolved: false,
+        query: trimmed,
+        locationText: trimmed,
+        message: errJson.message || `Geocoding service returned HTTP ${res.status}`,
+        errorType: res.status === 429 ? 'rate_limited' : res.status === 403 ? 'rejected' : 'network_error',
+        execution_time_ms: Date.now() - startTime
+      };
+    } catch {
+      return {
+        status: 'unresolved',
+        resolved: false,
+        query: trimmed,
+        locationText: trimmed,
+        message: 'Geocoding service temporarily unavailable',
+        errorType: 'timeout',
+        execution_time_ms: Date.now() - startTime
+      };
+    }
+  }
+
+  // 2. Check 24-hour in-memory cache
   const cacheKey = trimmed.toLowerCase();
   if (locationCache.has(cacheKey)) {
     const entry = locationCache.get(cacheKey)!;
@@ -461,31 +623,52 @@ export async function resolveGeographicLocation(query: string): Promise<Location
     locationCache.delete(cacheKey);
   }
 
-  // 2. Clean prefixes for search if necessary
+  // 3. Clean prefixes for search
   const cleaned = cleanLocationQuery(trimmed);
   const isExplicitForeign = hasExplicitForeignContext(trimmed);
 
-  // 3. Query OpenStreetMap Nominatim
-  let rawResults: NominatimRawResult[] = [];
-  try {
-    rawResults = await fetchNominatim(cleaned);
-    // If cleaned query yielded no results and differed from trimmed, try trimmed
-    if (rawResults.length === 0 && cleaned !== trimmed) {
-      rawResults = await fetchNominatim(trimmed);
+  // 4. Build prioritized search query variants (e.g., 'Nashik, Maharashtra, India', 'Nashik, India', 'Nashik')
+  const queriesToTry: string[] = [];
+  const lowerCleaned = cleaned.toLowerCase();
+
+  if (!isExplicitForeign && !cleaned.includes(',')) {
+    const state = INDIAN_CITY_STATE_MAP[lowerCleaned];
+    if (state) {
+      queriesToTry.push(`${cleaned}, ${state}, India`);
     }
-  } catch (err: any) {
-    console.error(`[Location Resolver] Error resolving "${trimmed}":`, err.message);
-    const failureResponse: LocationResolutionResponse = {
-      status: 'unresolved',
-      query: trimmed,
-      locationText: trimmed,
-      message: `Location lookup service error: ${err.message || 'Service unavailable'}.`,
-      execution_time_ms: Date.now() - startTime
-    };
-    return failureResponse;
+    queriesToTry.push(`${cleaned}, India`);
+    queriesToTry.push(cleaned);
+  } else {
+    queriesToTry.push(cleaned);
   }
 
-  // 4. Parse & Validate candidates
+  if (cleaned !== trimmed && !queriesToTry.includes(trimmed)) {
+    queriesToTry.push(trimmed);
+  }
+
+  // 5. Query OpenStreetMap Nominatim with safe error discrimination
+  let rawResults: NominatimRawResult[] = [];
+  let upstreamError: string | null = null;
+  let upstreamErrorType: 'rate_limited' | 'rejected' | 'timeout' | 'network_error' | undefined = undefined;
+
+  for (const q of queriesToTry) {
+    const outcome = await fetchNominatim(q);
+    if (outcome.status === 200 && outcome.data.length > 0) {
+      rawResults = outcome.data;
+      upstreamError = null;
+      upstreamErrorType = undefined;
+      break;
+    } else if (outcome.error && !upstreamError) {
+      upstreamError = outcome.error;
+      upstreamErrorType = outcome.errorType;
+      // If service is rate-limited or rejected, do not spam additional queries
+      if (outcome.status === 429 || outcome.status === 403) {
+        break;
+      }
+    }
+  }
+
+  // 6. Parse & Validate candidates
   const parsedCandidates: ResolvedLocation[] = [];
   for (const raw of rawResults) {
     const loc = parseNominatimItem(raw);
@@ -495,27 +678,31 @@ export async function resolveGeographicLocation(query: string): Promise<Location
   }
 
   if (parsedCandidates.length === 0) {
+    // Discriminate between upstream service failures and genuine Location Not Found
+    const message = upstreamError || `Location "${trimmed}" could not be resolved. Try adding a state or country.`;
     const unresolvedResponse: LocationResolutionResponse = {
       status: 'unresolved',
+      resolved: false,
       query: trimmed,
       locationText: trimmed,
-      message: `Location "${trimmed}" could not be resolved.`,
+      message,
+      errorType: upstreamErrorType,
       execution_time_ms: Date.now() - startTime
     };
 
-    // Cache negative result briefly (10 mins) to prevent rapid spamming of unknown names
-    locationCache.set(cacheKey, {
-      response: unresolvedResponse,
-      timestamp: Date.now()
-    });
+    // Cache negative result if not a transient failure (do not cache rate limits, timeouts, or rejections)
+    if (upstreamErrorType !== 'rate_limited' && upstreamErrorType !== 'timeout' && upstreamErrorType !== 'rejected') {
+      locationCache.set(cacheKey, {
+        response: unresolvedResponse,
+        timestamp: Date.now()
+      });
+    }
 
     return unresolvedResponse;
   }
 
-  // 5. India-First Resolution logic
+  // 7. India-First Resolution logic
   let activeCandidates = parsedCandidates;
-
-  // If the user did NOT explicitly specify a foreign country, prefer Indian candidates
   if (!isExplicitForeign) {
     const indianCandidates = parsedCandidates.filter(c => c.countryCode === 'IN');
     if (indianCandidates.length > 0) {
@@ -523,7 +710,7 @@ export async function resolveGeographicLocation(query: string): Promise<Location
     }
   }
 
-  // 6. Cluster candidates into distinct geographic places
+  // 8. Cluster candidates into distinct geographic places
   const distinctCandidates: ResolvedLocation[] = [];
   for (const cand of activeCandidates) {
     const exists = distinctCandidates.some(d => !areDistinctLocations(d, cand));
@@ -534,35 +721,58 @@ export async function resolveGeographicLocation(query: string): Promise<Location
 
   let finalResponse: LocationResolutionResponse;
 
-  if (distinctCandidates.length === 1) {
+  // Check for an exact city match that resolves city vs surrounding administrative district ambiguity
+  const exactCityMatch = distinctCandidates.find(c =>
+    c.name.toLowerCase() === cleaned.toLowerCase() &&
+    (c.placeType === 'city' || c.placeType === 'town' || c.confidence === 'high')
+  );
+
+  if (exactCityMatch && (distinctCandidates.length === 1 || !distinctCandidates.some(d => d !== exactCityMatch && (d.placeType === 'city' || d.placeType === 'town') && d.name.toLowerCase() === cleaned.toLowerCase()))) {
+    finalResponse = {
+      status: 'resolved',
+      resolved: true,
+      source: exactCityMatch.source || 'OpenStreetMap Nominatim',
+      query: trimmed,
+      location: exactCityMatch,
+      bbox: exactCityMatch.bbox,
+      center: exactCityMatch.center,
+      execution_time_ms: Date.now() - startTime
+    };
+  } else if (distinctCandidates.length === 1) {
     // Single unambiguous location
     const chosen = distinctCandidates[0];
     finalResponse = {
       status: 'resolved',
+      resolved: true,
+      source: chosen.source || 'OpenStreetMap Nominatim',
       query: trimmed,
       location: chosen,
+      bbox: chosen.bbox,
+      center: chosen.center,
       execution_time_ms: Date.now() - startTime
     };
   } else if (distinctCandidates.length > 1) {
-    // Multiple distinct locations exist
     const top = distinctCandidates[0];
     const second = distinctCandidates[1];
     const topImportance = top.importance || 0.5;
     const secondImportance = second.importance || 0.5;
     const importanceGap = topImportance - secondImportance;
 
-    // If top candidate is overwhelmingly more important (e.g. major metropolis vs tiny hamlet, gap > 0.22)
-    if (importanceGap > 0.22 && topImportance >= 0.58) {
+    if (importanceGap > 0.18 && topImportance >= 0.50) {
       finalResponse = {
         status: 'resolved',
+        resolved: true,
+        source: top.source || 'OpenStreetMap Nominatim',
         query: trimmed,
         location: top,
+        bbox: top.bbox,
+        center: top.center,
         execution_time_ms: Date.now() - startTime
       };
     } else {
-      // Ambiguous candidate locations
       finalResponse = {
         status: 'ambiguous',
+        resolved: false,
         query: trimmed,
         candidates: distinctCandidates.slice(0, 5),
         execution_time_ms: Date.now() - startTime
@@ -571,14 +781,15 @@ export async function resolveGeographicLocation(query: string): Promise<Location
   } else {
     finalResponse = {
       status: 'unresolved',
+      resolved: false,
       query: trimmed,
       locationText: trimmed,
-      message: `Location "${trimmed}" could not be resolved.`,
+      message: `Location "${trimmed}" could not be resolved. Try adding a state or country.`,
       execution_time_ms: Date.now() - startTime
     };
   }
 
-  // 7. Store in cache
+  // 9. Store in 24-hour cache
   if (locationCache.size >= MAX_CACHE_ENTRIES) {
     const oldestKey = locationCache.keys().next().value;
     if (oldestKey) locationCache.delete(oldestKey);

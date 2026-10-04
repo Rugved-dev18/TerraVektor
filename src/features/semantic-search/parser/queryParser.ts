@@ -107,6 +107,8 @@ export async function parseQueryAsync(query: string): Promise<QueryPlan> {
         // Unresolved
         plan.aoi = null;
         plan.locationStatus = 'unresolved';
+        plan.locationError = geoResult.message;
+        plan.errorType = geoResult.errorType;
         if (!plan.missingFields.includes('location')) {
           plan.missingFields.push('location');
         }
@@ -191,11 +193,21 @@ export function generateClarification(queryPlan: QueryPlan): {
   // Build missing fields
   const missingFields = queryPlan.missingFields.map(field => {
     if (field === 'location') {
+      let desc = 'Specify a geographic area to investigate';
+      if (queryPlan.locationStatus === 'unresolved') {
+        if (queryPlan.errorType === 'rate_limited' || queryPlan.locationError?.includes('rate limited')) {
+          desc = 'Geocoding service rate limited';
+        } else if (queryPlan.errorType === 'rejected' || queryPlan.locationError?.includes('rejected')) {
+          desc = 'Geocoding service rejected the request';
+        } else if (queryPlan.errorType === 'timeout' || queryPlan.errorType === 'network_error' || queryPlan.locationError?.includes('temporarily unavailable')) {
+          desc = 'Geocoding service temporarily unavailable';
+        } else {
+          desc = `Location "${queryPlan.location}" could not be resolved. Try adding a state or country.`;
+        }
+      }
       return {
         field: 'Location',
-        description: queryPlan.locationStatus === 'unresolved'
-          ? `Location "${queryPlan.location}" could not be resolved. Try adding a state or country.`
-          : 'Specify a geographic area to investigate',
+        description: desc,
         suggestions: getSupportedLocations().map(loc => `around ${loc}`)
       };
     }
@@ -260,8 +272,19 @@ export function generateClarification(queryPlan: QueryPlan): {
     title = 'UNSUPPORTED INVESTIGATION';
     description = `This workspace currently supports built-up change, vegetation change, and temporal satellite comparison. The following terms are not supported: ${queryPlan.unsupportedTerms.join(', ')}.`;
   } else if (queryPlan.locationStatus === 'unresolved') {
-    title = 'LOCATION NOT FOUND';
-    description = `Location "${queryPlan.location}" could not be resolved. Try adding a state or country.`;
+    if (queryPlan.errorType === 'rate_limited' || queryPlan.locationError?.includes('rate limited')) {
+      title = 'GEOCODING RATE LIMITED';
+      description = 'Geocoding service rate limited. Please wait a moment before querying again.';
+    } else if (queryPlan.errorType === 'rejected' || queryPlan.locationError?.includes('rejected')) {
+      title = 'GEOCODING REJECTED';
+      description = 'Geocoding service rejected the request.';
+    } else if (queryPlan.errorType === 'timeout' || queryPlan.errorType === 'network_error' || queryPlan.locationError?.includes('temporarily unavailable')) {
+      title = 'GEOCODING UNAVAILABLE';
+      description = 'Geocoding service temporarily unavailable. Please try again shortly.';
+    } else {
+      title = 'LOCATION NOT FOUND';
+      description = `Location "${queryPlan.location}" could not be resolved. Try adding a state or country.`;
+    }
   } else if (queryPlan.locationStatus === 'ambiguous') {
     title = 'LOCATION NEEDS CLARIFICATION';
     description = 'Multiple distinct geographic locations matched this query. Please select your desired area of interest.';

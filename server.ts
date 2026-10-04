@@ -13,7 +13,8 @@ function extractLocationName(query: string): string | null {
   const aliases: Record<string, string> = {
     'pune': 'Pune', 'poona': 'Pune', 'mumbai': 'Mumbai', 'bombay': 'Mumbai',
     'bengaluru': 'Bengaluru', 'bangalore': 'Bengaluru', 'delhi': 'Delhi',
-    'new delhi': 'Delhi', 'chennai': 'Chennai', 'madras': 'Chennai', 'jaipur': 'Jaipur'
+    'new delhi': 'Delhi', 'chennai': 'Chennai', 'madras': 'Chennai', 'jaipur': 'Jaipur',
+    'nashik': 'Nashik', 'nasik': 'Nashik', 'nagpur': 'Nagpur', 'kolhapur': 'Kolhapur'
   };
 
   for (const [alias, canonical] of Object.entries(aliases)) {
@@ -42,101 +43,549 @@ function extractLocationName(query: string): string | null {
   return null;
 }
 
-let externalResolveGeographicLocation: ((query: string) => Promise<any>) | null = null;
-try {
-  const mod = await import('./src/features/semantic-search/parser/locationResolver.js');
-  externalResolveGeographicLocation = mod.resolveGeographicLocation;
-} catch (e) {
-  console.log('[LocationResolver] Dynamic import not available in current runtime, using built-in geocoding');
+// ============================================================================
+// Robust Server-Side Dynamic Location Resolution (Nominatim Geocoding)
+// ============================================================================
+
+const LOCATION_PREFIXES = [
+  'around', 'near', 'in', 'at', 'around the', 'near the', 'in the', 'at the',
+  'region of', 'area of', 'city of', 'around the region of', 'near the region of', 'in the region of'
+];
+
+function cleanLocationQuery(query: string): string {
+  let cleaned = query.trim();
+  for (const prefix of LOCATION_PREFIXES) {
+    const pattern = new RegExp(`^${prefix}\\s+`, 'i');
+    cleaned = cleaned.replace(pattern, '');
+  }
+  return cleaned.trim() || query.trim();
 }
 
-async function fallbackResolveLocation(rawQuery: string): Promise<any> {
-  const trimmed = rawQuery.trim();
-  const aoiPresets: Record<string, [number, number, number, number]> = {
-    'pune': [73.70, 18.40, 74.05, 18.70],
-    'mumbai': [72.75, 18.90, 73.10, 19.25],
-    'bengaluru': [77.45, 12.85, 77.75, 13.10],
-    'delhi': [76.90, 28.45, 77.35, 28.85],
-    'chennai': [80.10, 12.90, 80.35, 13.20],
-    'jaipur': [75.65, 26.80, 75.95, 27.05]
-  };
+const NON_INDIA_COUNTRY_PATTERNS = [
+  /\b(uk|united kingdom|england|scotland|wales|great britain|gb)\b/i,
+  /\b(usa|united states|us|america)\b/i,
+  /\b(france|germany|deutschland|italy|italia|spain|espana)\b/i,
+  /\b(canada|australia|new zealand|nz)\b/i,
+  /\b(japan|nippon|china|russia|brazil|mexico)\b/i,
+  /\b(pakistan|bangladesh|nepal|sri lanka|bhutan|myanmar)\b/i,
+  /\b(uae|dubai|saudi arabia|qatar|oman|kuwait)\b/i,
+  /\b(singapore|malaysia|indonesia|thailand|vietnam|philippines)\b/i,
+  /\b(switzerland|netherlands|sweden|norway|denmark|finland|ireland|portugal|greece)\b/i,
+  /\b(south africa|egypt|kenya|nigeria)\b/i
+];
 
-  const lower = trimmed.toLowerCase();
-  for (const [city, bbox] of Object.entries(aoiPresets)) {
-    if (lower.includes(city)) {
-      const center = { lat: (bbox[1] + bbox[3]) / 2, lon: (bbox[0] + bbox[2]) / 2 };
-      const capCity = city.charAt(0).toUpperCase() + city.slice(1);
-      const locObj = {
-        name: capCity,
-        displayName: `${capCity}, India`,
-        country: 'India',
-        countryCode: 'IN',
-        bbox,
-        center,
-        source: 'preset',
-        confidence: 'high' as const
-      };
-      return {
-        status: 'resolved',
-        query: trimmed,
-        location: locObj,
-        locationText: trimmed,
-        candidates: [locObj]
-      };
+function hasExplicitForeignContext(query: string): boolean {
+  if (/\b(india|bharat|in)\b/i.test(query)) {
+    return false;
+  }
+  return NON_INDIA_COUNTRY_PATTERNS.some(p => p.test(query));
+}
+
+const INDIAN_CITY_STATE_MAP: Record<string, string> = {
+  nashik: 'Maharashtra',
+  nasik: 'Maharashtra',
+  pune: 'Maharashtra',
+  poona: 'Maharashtra',
+  nagpur: 'Maharashtra',
+  kolhapur: 'Maharashtra',
+  mumbai: 'Maharashtra',
+  bombay: 'Maharashtra',
+  thane: 'Maharashtra',
+  aurangabad: 'Maharashtra',
+  'chhatrapati sambhajinagar': 'Maharashtra',
+  solapur: 'Maharashtra',
+  amravati: 'Maharashtra',
+  nanded: 'Maharashtra',
+  sangli: 'Maharashtra',
+  jalgaon: 'Maharashtra',
+  akola: 'Maharashtra',
+  latur: 'Maharashtra',
+  dhule: 'Maharashtra',
+  ahmednagar: 'Maharashtra',
+  chandrapur: 'Maharashtra',
+  parbhani: 'Maharashtra',
+  bengaluru: 'Karnataka',
+  bangalore: 'Karnataka',
+  mysuru: 'Karnataka',
+  mysore: 'Karnataka',
+  hubli: 'Karnataka',
+  mangalore: 'Karnataka',
+  delhi: 'Delhi',
+  'new delhi': 'Delhi',
+  chennai: 'Tamil Nadu',
+  madras: 'Tamil Nadu',
+  coimbatore: 'Tamil Nadu',
+  madurai: 'Tamil Nadu',
+  jaipur: 'Rajasthan',
+  jodhpur: 'Rajasthan',
+  udaipur: 'Rajasthan',
+  kota: 'Rajasthan',
+  hyderabad: 'Telangana',
+  warangal: 'Telangana',
+  ahmedabad: 'Gujarat',
+  surat: 'Gujarat',
+  vadodara: 'Gujarat',
+  rajkot: 'Gujarat',
+  kolkata: 'West Bengal',
+  calcutta: 'West Bengal',
+  lucknow: 'Uttar Pradesh',
+  kanpur: 'Uttar Pradesh',
+  varanasi: 'Uttar Pradesh',
+  agra: 'Uttar Pradesh',
+  noida: 'Uttar Pradesh',
+  ghaziabad: 'Uttar Pradesh',
+  bhopal: 'Madhya Pradesh',
+  indore: 'Madhya Pradesh',
+  patna: 'Bihar',
+  chandigarh: 'Punjab',
+  amritsar: 'Punjab',
+  kochi: 'Kerala',
+  cochin: 'Kerala',
+  thiruvananthapuram: 'Kerala',
+  trivandrum: 'Kerala',
+  guwahati: 'Assam',
+  bhubaneswar: 'Odisha'
+};
+
+function isValidCoordinate(lat: number, lon: number): boolean {
+  return Number.isFinite(lat) && Number.isFinite(lon) && lat >= -90 && lat <= 90 && lon >= -180 && lon <= 180;
+}
+
+function isValidBbox(bbox: [number, number, number, number]): boolean {
+  const [west, south, east, north] = bbox;
+  return Number.isFinite(west) && Number.isFinite(south) && Number.isFinite(east) && Number.isFinite(north) &&
+    west >= -180 && west <= 180 && east >= -180 && east <= 180 &&
+    south >= -90 && south <= 90 && north >= -90 && north <= 90 &&
+    west < east && south < north;
+}
+
+function getDistanceKm(lat1: number, lon1: number, lat2: number, lon2: number): number {
+  const R = 6371;
+  const dLat = ((lat2 - lat1) * Math.PI) / 180;
+  const dLon = ((lon2 - lon1) * Math.PI) / 180;
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos((lat1 * Math.PI) / 180) * Math.cos((lat2 * Math.PI) / 180) *
+    Math.sin(dLon / 2) * Math.sin(dLon / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
+}
+
+function areDistinctLocations(a: any, b: any): boolean {
+  if (a.countryCode && b.countryCode && a.countryCode !== b.countryCode) {
+    return true;
+  }
+  if (a.state && b.state && a.state.trim().toLowerCase() !== b.state.trim().toLowerCase()) {
+    return true;
+  }
+  const aName = (a.name || '').toLowerCase();
+  const bName = (b.name || '').toLowerCase();
+  if (aName === bName || aName.startsWith(bName) || bName.startsWith(aName)) {
+    if (a.placeType === 'city' || b.placeType === 'city' || a.placeType === 'administrative' || b.placeType === 'administrative') {
+      return false;
     }
   }
+  const dist = getDistanceKm(a.center.lat, a.center.lon, b.center.lat, b.center.lon);
+  return dist > 75;
+}
+
+interface ServerCacheEntry {
+  response: any;
+  timestamp: number;
+}
+
+const locationCache = new Map<string, ServerCacheEntry>();
+const CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+const MAX_CACHE_ENTRIES = 1000;
+
+let lastNominatimRequestTime = 0;
+const MIN_REQUEST_INTERVAL_MS = 1000;
+
+async function throttleNominatim(): Promise<void> {
+  const now = Date.now();
+  const elapsed = now - lastNominatimRequestTime;
+  if (elapsed < MIN_REQUEST_INTERVAL_MS) {
+    await new Promise(resolve => setTimeout(resolve, MIN_REQUEST_INTERVAL_MS - elapsed));
+  }
+  lastNominatimRequestTime = Date.now();
+}
+
+interface NominatimRawResult {
+  place_id: number;
+  licence: string;
+  osm_type: string;
+  osm_id: number;
+  lat: string;
+  lon: string;
+  category: string;
+  type: string;
+  place_rank: number;
+  importance?: number;
+  addresstype?: string;
+  name?: string;
+  display_name: string;
+  address?: Record<string, any>;
+  boundingbox?: [string, string, string, string];
+}
+
+interface NominatimFetchOutcome {
+  status: number;
+  data: NominatimRawResult[];
+  error?: string;
+  errorType?: 'rate_limited' | 'rejected' | 'timeout' | 'network_error';
+}
+
+async function fetchNominatim(query: string, limit = 8): Promise<NominatimFetchOutcome> {
+  await throttleNominatim();
+  const encoded = encodeURIComponent(query);
+  const url = `https://nominatim.openstreetmap.org/search?q=${encoded}&format=jsonv2&addressdetails=1&limit=${limit}`;
 
   try {
-    const encoded = encodeURIComponent(trimmed);
-    const resp = await fetch(`https://nominatim.openstreetmap.org/search?q=${encoded}&format=jsonv2&addressdetails=1&limit=5`, {
-      headers: { 'Accept': 'application/json', 'User-Agent': 'TerraVektor-Geocoding-Resolver/1.0' },
-      signal: AbortSignal.timeout(5000)
+    const res = await fetch(url, {
+      method: 'GET',
+      headers: {
+        'Accept': 'application/json',
+        'Accept-Language': 'en',
+        'User-Agent': 'TerraVektor/1.0 (Geospatial Investigation Platform)'
+      },
+      signal: AbortSignal.timeout(8000)
     });
-    if (resp.ok) {
-      const data = await resp.json();
-      if (Array.isArray(data) && data.length > 0) {
-        const item = data[0];
-        const lat = parseFloat(item.lat);
-        const lon = parseFloat(item.lon);
-        let bbox: [number, number, number, number] = [lon - 0.05, lat - 0.05, lon + 0.05, lat + 0.05];
-        if (item.boundingbox && item.boundingbox.length === 4) {
-          bbox = [parseFloat(item.boundingbox[2]), parseFloat(item.boundingbox[0]), parseFloat(item.boundingbox[3]), parseFloat(item.boundingbox[1])];
-        }
-        const locObj = {
-          name: item.name || item.display_name.split(',')[0],
-          displayName: item.display_name,
-          country: item.address?.country,
-          countryCode: item.address?.country_code?.toUpperCase(),
-          center: { lat, lon },
-          bbox,
-          confidence: 'high' as const,
-          source: 'nominatim'
-        };
-        return {
-          status: 'resolved',
-          query: trimmed,
-          location: locObj,
-          locationText: trimmed,
-          candidates: [locObj]
-        };
-      }
-    }
-  } catch (err) {
-    console.warn('[LocationResolver] Nominatim query failed:', err);
-  }
 
-  return { status: 'unresolved', query: trimmed, locationText: trimmed, message: 'Location not found' };
+    if (res.status === 429) {
+      console.warn(`[LocationResolver] query=${query} status=429 resultCount=0`);
+      return {
+        status: 429,
+        data: [],
+        error: 'Geocoding service rate limited',
+        errorType: 'rate_limited'
+      };
+    }
+
+    if (res.status === 403) {
+      console.warn(`[LocationResolver] query=${query} status=403 resultCount=0`);
+      return {
+        status: 403,
+        data: [],
+        error: 'Geocoding service rejected the request',
+        errorType: 'rejected'
+      };
+    }
+
+    if (!res.ok) {
+      console.warn(`[LocationResolver] query=${query} status=${res.status} resultCount=0`);
+      return {
+        status: res.status,
+        data: [],
+        error: 'Geocoding service temporarily unavailable',
+        errorType: 'network_error'
+      };
+    }
+
+    const data = await res.json();
+    const results = Array.isArray(data) ? data : [];
+    console.log(`[LocationResolver] query=${query} status=200 resultCount=${results.length}`);
+    return {
+      status: 200,
+      data: results
+    };
+  } catch (err: any) {
+    const isTimeout =
+      err?.name === 'TimeoutError' ||
+      err?.name === 'AbortError' ||
+      err?.message?.includes('timeout') ||
+      err?.message?.includes('aborted');
+
+    console.warn(`[LocationResolver] query=${query} status=${isTimeout ? 'timeout' : 'network_error'} resultCount=0`);
+    return {
+      status: 0,
+      data: [],
+      error: 'Geocoding service temporarily unavailable',
+      errorType: isTimeout ? 'timeout' : 'network_error'
+    };
+  }
 }
 
-async function resolveGeographicLocation(rawQuery: string): Promise<any> {
-  if (externalResolveGeographicLocation) {
-    try {
-      return await externalResolveGeographicLocation(rawQuery);
-    } catch (e) {
-      console.warn('[LocationResolver] External resolver threw, using built-in fallback:', e);
+function parseNominatimItem(item: NominatimRawResult): any | null {
+  const lat = parseFloat(item.lat);
+  const lon = parseFloat(item.lon);
+  if (!isValidCoordinate(lat, lon)) {
+    return null;
+  }
+
+  let west: number, south: number, east: number, north: number;
+  if (item.boundingbox && item.boundingbox.length === 4) {
+    south = parseFloat(item.boundingbox[0]);
+    north = parseFloat(item.boundingbox[1]);
+    west = parseFloat(item.boundingbox[2]);
+    east = parseFloat(item.boundingbox[3]);
+  } else {
+    west = lon - 0.05;
+    east = lon + 0.05;
+    south = lat - 0.05;
+    north = lat + 0.05;
+  }
+
+  if (west === east) { west -= 0.05; east += 0.05; }
+  if (south === north) { south -= 0.05; north += 0.05; }
+  if (west > east) { const tmp = west; west = east; east = tmp; }
+  if (south > north) { const tmp = south; south = north; north = tmp; }
+
+  const bbox: [number, number, number, number] = [
+    Number(west.toFixed(6)),
+    Number(south.toFixed(6)),
+    Number(east.toFixed(6)),
+    Number(north.toFixed(6))
+  ];
+
+  if (!isValidBbox(bbox)) {
+    return null;
+  }
+
+  const addr = item.address || {};
+  const name =
+    item.name ||
+    addr.city ||
+    addr.town ||
+    addr.village ||
+    addr.state_district ||
+    item.display_name.split(',')[0].trim();
+
+  const country = addr.country;
+  const countryCode = addr.country_code ? addr.country_code.toUpperCase() : undefined;
+  const state = addr.state || addr.state_district;
+  const importance = typeof item.importance === 'number' ? item.importance : 0.5;
+
+  let confidence: 'high' | 'medium' | 'low' = 'medium';
+  if (
+    importance >= 0.50 &&
+    (item.place_rank <= 16 || item.type === 'city' || item.type === 'administrative')
+  ) {
+    confidence = 'high';
+  } else if (importance < 0.35) {
+    confidence = 'low';
+  }
+
+  return {
+    name,
+    displayName: item.display_name,
+    country,
+    countryCode,
+    state,
+    bbox,
+    center: {
+      lat: Number(lat.toFixed(6)),
+      lon: Number(lon.toFixed(6))
+    },
+    source: 'OpenStreetMap Nominatim',
+    confidence,
+    placeType: item.type || item.addresstype || item.category,
+    importance
+  };
+}
+
+async function resolveGeographicLocation(query: string): Promise<any> {
+  const startTime = Date.now();
+  const trimmed = query?.trim() || '';
+
+  if (!trimmed) {
+    return {
+      status: 'unresolved',
+      resolved: false,
+      query: trimmed,
+      locationText: trimmed,
+      message: 'Location query is empty.',
+      execution_time_ms: 0
+    };
+  }
+
+  // 1. Check 24-hour in-memory cache
+  const cacheKey = trimmed.toLowerCase();
+  if (locationCache.has(cacheKey)) {
+    const entry = locationCache.get(cacheKey)!;
+    if (Date.now() - entry.timestamp < CACHE_TTL_MS) {
+      return {
+        ...entry.response,
+        cached: true,
+        execution_time_ms: Date.now() - startTime
+      };
+    }
+    locationCache.delete(cacheKey);
+  }
+
+  // 2. Clean prefixes
+  const cleaned = cleanLocationQuery(trimmed);
+  const isExplicitForeign = hasExplicitForeignContext(trimmed);
+
+  // 3. Build prioritized search query variants (e.g. 'Nashik, Maharashtra, India', 'Nashik, India', 'Nashik')
+  const queriesToTry: string[] = [];
+  const lowerCleaned = cleaned.toLowerCase();
+
+  if (!isExplicitForeign && !cleaned.includes(',')) {
+    const state = INDIAN_CITY_STATE_MAP[lowerCleaned];
+    if (state) {
+      queriesToTry.push(`${cleaned}, ${state}, India`);
+    }
+    queriesToTry.push(`${cleaned}, India`);
+    queriesToTry.push(cleaned);
+  } else {
+    queriesToTry.push(cleaned);
+  }
+
+  if (cleaned !== trimmed && !queriesToTry.includes(trimmed)) {
+    queriesToTry.push(trimmed);
+  }
+
+  // 4. Query OpenStreetMap Nominatim with safe error discrimination
+  let rawResults: NominatimRawResult[] = [];
+  let upstreamError: string | null = null;
+  let upstreamErrorType: 'rate_limited' | 'rejected' | 'timeout' | 'network_error' | undefined = undefined;
+
+  for (const q of queriesToTry) {
+    const outcome = await fetchNominatim(q);
+    if (outcome.status === 200 && outcome.data.length > 0) {
+      rawResults = outcome.data;
+      upstreamError = null;
+      upstreamErrorType = undefined;
+      break;
+    } else if (outcome.error && !upstreamError) {
+      upstreamError = outcome.error;
+      upstreamErrorType = outcome.errorType;
+      if (outcome.status === 429 || outcome.status === 403) {
+        break;
+      }
     }
   }
-  return fallbackResolveLocation(rawQuery);
+
+  // 5. Parse & Validate candidates
+  const parsedCandidates: any[] = [];
+  for (const raw of rawResults) {
+    const loc = parseNominatimItem(raw);
+    if (loc) {
+      parsedCandidates.push(loc);
+    }
+  }
+
+  if (parsedCandidates.length === 0) {
+    const message = upstreamError || `Location "${trimmed}" could not be resolved. Try adding a state or country.`;
+    const unresolvedResponse = {
+      status: 'unresolved',
+      resolved: false,
+      query: trimmed,
+      locationText: trimmed,
+      message,
+      errorType: upstreamErrorType,
+      execution_time_ms: Date.now() - startTime
+    };
+
+    // Cache negative result only if genuine not found (not rate-limited, rejected, or timeout)
+    if (upstreamErrorType !== 'rate_limited' && upstreamErrorType !== 'timeout' && upstreamErrorType !== 'rejected') {
+      locationCache.set(cacheKey, {
+        response: unresolvedResponse,
+        timestamp: Date.now()
+      });
+    }
+
+    return unresolvedResponse;
+  }
+
+  // 6. India-First Resolution logic
+  let activeCandidates = parsedCandidates;
+  if (!isExplicitForeign) {
+    const indianCandidates = parsedCandidates.filter(c => c.countryCode === 'IN');
+    if (indianCandidates.length > 0) {
+      activeCandidates = indianCandidates;
+    }
+  }
+
+  // 7. Cluster candidates into distinct geographic places
+  const distinctCandidates: any[] = [];
+  for (const cand of activeCandidates) {
+    const exists = distinctCandidates.some(d => !areDistinctLocations(d, cand));
+    if (!exists) {
+      distinctCandidates.push(cand);
+    }
+  }
+
+  let finalResponse: any;
+
+  // Check for an exact city match that resolves city vs surrounding administrative district ambiguity
+  const exactCityMatch = distinctCandidates.find(c =>
+    c.name.toLowerCase() === cleaned.toLowerCase() &&
+    (c.placeType === 'city' || c.placeType === 'town' || c.confidence === 'high')
+  );
+
+  if (exactCityMatch && (distinctCandidates.length === 1 || !distinctCandidates.some(d => d !== exactCityMatch && (d.placeType === 'city' || d.placeType === 'town') && d.name.toLowerCase() === cleaned.toLowerCase()))) {
+    finalResponse = {
+      status: 'resolved',
+      resolved: true,
+      source: exactCityMatch.source || 'OpenStreetMap Nominatim',
+      query: trimmed,
+      location: exactCityMatch,
+      bbox: exactCityMatch.bbox,
+      center: exactCityMatch.center,
+      execution_time_ms: Date.now() - startTime
+    };
+  } else if (distinctCandidates.length === 1) {
+    const chosen = distinctCandidates[0];
+    finalResponse = {
+      status: 'resolved',
+      resolved: true,
+      source: chosen.source || 'OpenStreetMap Nominatim',
+      query: trimmed,
+      location: chosen,
+      bbox: chosen.bbox,
+      center: chosen.center,
+      execution_time_ms: Date.now() - startTime
+    };
+  } else if (distinctCandidates.length > 1) {
+    const top = distinctCandidates[0];
+    const second = distinctCandidates[1];
+    const topImportance = top.importance || 0.5;
+    const secondImportance = second.importance || 0.5;
+    const importanceGap = topImportance - secondImportance;
+
+    if (importanceGap > 0.18 && topImportance >= 0.50) {
+      finalResponse = {
+        status: 'resolved',
+        resolved: true,
+        source: top.source || 'OpenStreetMap Nominatim',
+        query: trimmed,
+        location: top,
+        bbox: top.bbox,
+        center: top.center,
+        execution_time_ms: Date.now() - startTime
+      };
+    } else {
+      finalResponse = {
+        status: 'ambiguous',
+        resolved: false,
+        query: trimmed,
+        candidates: distinctCandidates.slice(0, 5),
+        execution_time_ms: Date.now() - startTime
+      };
+    }
+  } else {
+    finalResponse = {
+      status: 'unresolved',
+      resolved: false,
+      query: trimmed,
+      locationText: trimmed,
+      message: `Location "${trimmed}" could not be resolved. Try adding a state or country.`,
+      execution_time_ms: Date.now() - startTime
+    };
+  }
+
+  // 8. Store in 24-hour cache
+  if (locationCache.size >= MAX_CACHE_ENTRIES) {
+    const oldestKey = locationCache.keys().next().value;
+    if (oldestKey) locationCache.delete(oldestKey);
+  }
+  locationCache.set(cacheKey, {
+    response: finalResponse,
+    timestamp: Date.now()
+  });
+
+  return finalResponse;
 }
 
 const __filename = fileURLToPath(import.meta.url);
@@ -430,21 +879,28 @@ async function startServer() {
     if (!rawQuery || typeof rawQuery !== 'string' || !rawQuery.trim()) {
       return res.status(400).json({
         status: 'unresolved',
+        resolved: false,
         message: "Query parameter 'q' or 'query' is required."
       });
     }
 
     try {
-      const result = resolveGeographicLocation
-        ? await resolveGeographicLocation(rawQuery)
-        : await fallbackResolveLocation(rawQuery);
-      return res.json(result);
+      const result = await resolveGeographicLocation(rawQuery);
+      return res.json({
+        query: rawQuery.trim(),
+        resolved: result.status === 'resolved',
+        source: result.location?.source || result.source || 'OpenStreetMap Nominatim',
+        bbox: result.location?.bbox || result.bbox || null,
+        center: result.location?.center || result.center || null,
+        ...result
+      });
     } catch (err: any) {
-      console.error('[API /api/location/resolve] Error:', err);
+      console.error('[API /api/location/resolve] Error:', err?.message || err);
       return res.status(500).json({
         status: 'unresolved',
+        resolved: false,
         locationText: rawQuery,
-        message: `Failed to resolve location: ${err.message || 'Internal error'}`
+        message: `Failed to resolve location: ${err?.message || 'Internal error'}`
       });
     }
   });
@@ -454,21 +910,28 @@ async function startServer() {
     if (!rawQuery || typeof rawQuery !== 'string' || !rawQuery.trim()) {
       return res.status(400).json({
         status: 'unresolved',
+        resolved: false,
         message: "Request body property 'q' or 'query' is required."
       });
     }
 
     try {
-      const result = resolveGeographicLocation
-        ? await resolveGeographicLocation(rawQuery)
-        : await fallbackResolveLocation(rawQuery);
-      return res.json(result);
+      const result = await resolveGeographicLocation(rawQuery);
+      return res.json({
+        query: rawQuery.trim(),
+        resolved: result.status === 'resolved',
+        source: result.location?.source || result.source || 'OpenStreetMap Nominatim',
+        bbox: result.location?.bbox || result.bbox || null,
+        center: result.location?.center || result.center || null,
+        ...result
+      });
     } catch (err: any) {
-      console.error('[API /api/location/resolve POST] Error:', err);
+      console.error('[API /api/location/resolve POST] Error:', err?.message || err);
       return res.status(500).json({
         status: 'unresolved',
+        resolved: false,
         locationText: rawQuery,
-        message: `Failed to resolve location: ${err.message || 'Internal error'}`
+        message: `Failed to resolve location: ${err?.message || 'Internal error'}`
       });
     }
   });
@@ -2024,6 +2487,7 @@ async function startServer() {
     status?: 'valid' | 'incomplete' | 'ambiguous' | 'unsupported';
     missingFields?: string[];
     locationStatus?: 'resolved' | 'ambiguous' | 'unresolved';
+    errorType?: string;
     resolvedLocation?: any;
     locationDetails?: any;
     locationCandidates?: any[];
@@ -2177,7 +2641,8 @@ async function startServer() {
       result.locationStatus = 'unresolved';
       result.status = 'incomplete';
       result.missingFields = ['location'];
-      result.error = `Location "${foundLocation}" not found. Try adding a state or country.`;
+      result.error = geoRes.message || `Location "${foundLocation}" not found. Try adding a state or country.`;
+      result.errorType = geoRes.errorType;
       return result;
     }
 
@@ -2559,6 +3024,7 @@ async function startServer() {
           parsedQuery,
           error: parsedQuery.error,
           message: parsedQuery.error,
+          errorType: parsedQuery.errorType,
           status: parsedQuery.status,
           missingFields: parsedQuery.missingFields
         });
