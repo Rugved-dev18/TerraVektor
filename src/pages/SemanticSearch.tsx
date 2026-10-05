@@ -110,6 +110,10 @@ export const SemanticSearch: React.FC = () => {
   };
 
   const handleSelectPair = async (newBefore: TemporalScene, newAfter: TemporalScene) => {
+    if (newAfter.cloudCover > 35) {
+      console.warn('Cannot select scene with cloud cover > 35% as visual AFTER scene');
+      return;
+    }
     setSelectedBeforeScene(newBefore);
     setSelectedAfterScene(newAfter);
     setSelectedCandidateId(null);
@@ -383,7 +387,7 @@ export const SemanticSearch: React.FC = () => {
       )}
 
       {/* 2. Investigation Ribbon (Section 2) */}
-      {result && effectiveBeforeScene && effectiveAfterScene && (
+      {result && effectiveBeforeScene && (
         <InvestigationRibbon
           currentStage={selectedCandidate ? 'explain' : 'detect'}
           aoiLabel={resolvedLocation?.displayName || result.parsedQuery?.location || 'Working AOI'}
@@ -392,7 +396,7 @@ export const SemanticSearch: React.FC = () => {
             (resolvedLocation?.center ? resolvedLocation.center.lat : (effectiveBeforeScene.bbox ? (effectiveBeforeScene.bbox[1] + effectiveBeforeScene.bbox[3]) / 2 : 18.5204))
           ]}
           beforeDate={effectiveBeforeScene.acquisition_date || effectiveBeforeScene.acquisitionDate}
-          afterDate={effectiveAfterScene.acquisition_date || effectiveAfterScene.acquisitionDate}
+          afterDate={effectiveAfterScene ? (effectiveAfterScene.acquisition_date || effectiveAfterScene.acquisitionDate) : 'No usable monitoring scene'}
           candidateCount={candidateList.length}
         />
       )}
@@ -410,7 +414,7 @@ export const SemanticSearch: React.FC = () => {
       )}
 
       {/* 3. MAP-FIRST COCKPIT LAYOUT (Section 3: Map 72-75%, Evidence Spine 25-28%) */}
-      {result && effectiveBeforeScene && effectiveAfterScene && (
+      {result && effectiveBeforeScene && (
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-3.5 items-start">
           {/* THE MAP IS THE WORKSPACE (Left: ~73%) */}
           <div className="lg:col-span-8 xl:col-span-9 space-y-3">
@@ -425,7 +429,7 @@ export const SemanticSearch: React.FC = () => {
                 data_mode: effectiveBeforeScene.data_mode,
                 preview_url: `/api/sentinel2/preview/${effectiveBeforeScene.id || effectiveBeforeScene.productId}`
               }}
-              afterScene={{
+              afterScene={effectiveAfterScene ? {
                 id: effectiveAfterScene.id || effectiveAfterScene.productId,
                 name: effectiveAfterScene.name || effectiveAfterScene.productName,
                 acquisition_date: effectiveAfterScene.acquisition_date || effectiveAfterScene.acquisitionDate,
@@ -434,7 +438,7 @@ export const SemanticSearch: React.FC = () => {
                 bbox: effectiveAfterScene.bbox,
                 data_mode: effectiveAfterScene.data_mode,
                 preview_url: `/api/sentinel2/preview/${effectiveAfterScene.id || effectiveAfterScene.productId}`
-              }}
+              } : null}
               aoiBbox={result.parsedQuery?.aoi || resolvedLocation?.bbox || [73.70, 18.40, 74.05, 18.70]}
               analysis={currentAnalysis}
               selectedCandidateId={selectedCandidateId}
@@ -544,7 +548,7 @@ export const SemanticSearch: React.FC = () => {
                 data_mode: effectiveBeforeScene.data_mode,
                 preview_url: `/api/sentinel2/preview/${effectiveBeforeScene.id || effectiveBeforeScene.productId}`
               }}
-              afterScene={{
+              afterScene={effectiveAfterScene ? {
                 id: effectiveAfterScene.id || effectiveAfterScene.productId,
                 name: effectiveAfterScene.name || effectiveAfterScene.productName,
                 acquisition_date: effectiveAfterScene.acquisition_date || effectiveAfterScene.acquisitionDate,
@@ -553,7 +557,7 @@ export const SemanticSearch: React.FC = () => {
                 bbox: effectiveAfterScene.bbox,
                 data_mode: effectiveAfterScene.data_mode,
                 preview_url: `/api/sentinel2/preview/${effectiveAfterScene.id || effectiveAfterScene.productId}`
-              }}
+              } : null}
               onSelectCandidate={(id) => setSelectedCandidateId(id)}
               onClose={() => setSelectedCandidateId(null)}
               dataMode={currentAnalysis?.data_mode}

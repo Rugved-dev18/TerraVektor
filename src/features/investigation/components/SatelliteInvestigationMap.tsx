@@ -40,7 +40,7 @@ export type { CandidateRegion };
 
 interface SatelliteInvestigationMapProps {
   beforeScene: SceneSummary;
-  afterScene: SceneSummary;
+  afterScene?: SceneSummary | null;
   aoiBbox: [number, number, number, number]; // [minLon, minLat, maxLon, maxLat]
   analysis?: BuiltUpAnalysisResult | ChangeAnalysisResult | null;
   selectedCandidateId?: string | null;
@@ -244,12 +244,14 @@ export const SatelliteInvestigationMap: React.FC<SatelliteInvestigationMapProps>
       ? L.latLngBounds([beforeScene.bbox[1], beforeScene.bbox[0]], [beforeScene.bbox[3], beforeScene.bbox[2]])
       : aoiBounds;
 
-    const afterBounds = afterScene.bbox 
+    const hasUsableAfter = Boolean(afterScene && (afterScene.cloud_cover ?? 0) <= 35 && afterScene.id);
+
+    const afterBounds = afterScene?.bbox 
       ? L.latLngBounds([afterScene.bbox[1], afterScene.bbox[0]], [afterScene.bbox[3], afterScene.bbox[2]])
       : aoiBounds;
 
     const beforeUrl = beforeScene.preview_url || `/api/sentinel2/preview/${beforeScene.id}`;
-    const afterUrl = afterScene.preview_url || `/api/sentinel2/preview/${afterScene.id}`;
+    const afterUrl = afterScene?.preview_url || (afterScene?.id ? `/api/sentinel2/preview/${afterScene.id}` : '');
 
     setIsBeforeLoading(true);
     setBeforeError(false);
@@ -271,20 +273,25 @@ export const SatelliteInvestigationMap: React.FC<SatelliteInvestigationMapProps>
     });
     beforeOverlayRef.current = beforeOverlay;
 
-    const afterOverlay = L.imageOverlay(afterUrl, afterBounds, {
-      pane: 'afterPane',
-      opacity: 0.95
-    }).addTo(map);
+    if (hasUsableAfter && afterUrl) {
+      const afterOverlay = L.imageOverlay(afterUrl, afterBounds, {
+        pane: 'afterPane',
+        opacity: 0.95
+      }).addTo(map);
 
-    afterOverlay.on('load', () => {
-      setIsAfterLoading(false);
-      setAfterError(false);
-    });
-    afterOverlay.on('error', () => {
+      afterOverlay.on('load', () => {
+        setIsAfterLoading(false);
+        setAfterError(false);
+      });
+      afterOverlay.on('error', () => {
+        setIsAfterLoading(false);
+        setAfterError(true);
+      });
+      afterOverlayRef.current = afterOverlay;
+    } else {
       setIsAfterLoading(false);
       setAfterError(true);
-    });
-    afterOverlayRef.current = afterOverlay;
+    }
 
     map.fitBounds(aoiBounds.pad(0.1), { duration: 0.6 });
   }, [beforeScene, afterScene, aoiBbox, showAoiBoundary]);
@@ -745,16 +752,16 @@ export const SatelliteInvestigationMap: React.FC<SatelliteInvestigationMapProps>
         </div>
 
         {/* Sentinel-2 Imagery Error Warning Banner */}
-        {(beforeError || afterError) && (
+        {(beforeError || afterError || !afterScene || (afterScene && afterScene.cloud_cover > 35)) && (
           <div className="absolute top-14 left-1/2 -translate-x-1/2 z-[1040] pointer-events-none">
             <div className="bg-rose-950/90 text-rose-200 border border-rose-500/60 rounded px-3 py-1.5 text-xs font-mono flex items-center space-x-2 shadow-lg backdrop-blur-xs">
               <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
               <span>
-                {beforeError && afterError 
+                {beforeError && (afterError || !afterScene || afterScene.cloud_cover > 35)
                   ? 'Sentinel-2 preview unavailable for both scenes' 
                   : beforeError 
                   ? 'Baseline Sentinel-2 preview unavailable' 
-                  : 'Monitoring Sentinel-2 preview unavailable'}
+                  : 'No usable monitoring scene available'}
               </span>
             </div>
           </div>
@@ -838,15 +845,24 @@ export const SatelliteInvestigationMap: React.FC<SatelliteInvestigationMapProps>
           >
             <div className="text-right">
               <div className="text-[10px] text-slate-300 font-sans font-semibold flex items-center justify-end gap-1.5">
-                {afterError && <span className="text-rose-400 font-mono text-[9px]">(Unavailable)</span>}
-                {isAfterLoading && <Loader2 className="w-2.5 h-2.5 animate-spin text-sky-400" />}
-                <span>AFTER MONITORING</span>
+                {afterError || !afterScene || (afterScene && afterScene.cloud_cover > 35) ? (
+                  <span className="text-rose-400 font-mono text-[9px]">No usable monitoring scene available</span>
+                ) : (
+                  <>
+                    {isAfterLoading && <Loader2 className="w-2.5 h-2.5 animate-spin text-sky-400" />}
+                    <span>AFTER MONITORING</span>
+                  </>
+                )}
               </div>
               <div className="text-[11px] font-bold text-white">
-                {format(new Date(afterScene.acquisition_date), 'yyyy-MM-dd')}
+                {afterError || !afterScene || (afterScene && afterScene.cloud_cover > 35) ? (
+                  <span className="text-slate-400 text-[10px]">Cloud &gt; 35% or preview unavailable</span>
+                ) : (
+                  afterScene?.acquisition_date ? format(new Date(afterScene.acquisition_date), 'yyyy-MM-dd') : 'N/A'
+                )}
               </div>
             </div>
-            <span className={`w-2 h-2 rounded-full shrink-0 ${afterError ? 'bg-rose-500' : isAfterLoading ? 'bg-sky-400 animate-pulse' : 'bg-sky-500'}`} />
+            <span className={`w-2 h-2 rounded-full shrink-0 ${afterError || !afterScene || (afterScene && afterScene.cloud_cover > 35) ? 'bg-rose-500' : isAfterLoading ? 'bg-sky-400 animate-pulse' : 'bg-sky-500'}`} />
           </button>
         </div>
 

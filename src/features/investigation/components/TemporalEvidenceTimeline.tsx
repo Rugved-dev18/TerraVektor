@@ -39,8 +39,12 @@ export const TemporalEvidenceTimeline: React.FC<TemporalEvidenceTimelineProps> =
     );
   }, [temporalScenes]);
 
-  const selectedBefore = sortedScenes.find(s => s.productId === selectedBeforeId) || sortedScenes[0] || null;
-  const selectedAfter = sortedScenes.find(s => s.productId === selectedAfterId) || sortedScenes[sortedScenes.length - 1] || null;
+  // Filter usable observations (Requirement 1: cloud cover <= 35%)
+  const isUsable = (s: TemporalScene) => typeof s.cloudCover === 'number' && s.cloudCover <= 35;
+  const usableScenes = sortedScenes.filter(isUsable);
+
+  const selectedBefore = sortedScenes.find(s => s.productId === selectedBeforeId) || usableScenes[0] || sortedScenes[0] || null;
+  const selectedAfter = sortedScenes.find(s => s.productId === selectedAfterId && isUsable(s)) || (usableScenes.length > 0 ? usableScenes[usableScenes.length - 1] : null);
 
   const daysSeparation = selectedBefore && selectedAfter
     ? Math.abs(differenceInDays(new Date(selectedAfter.acquisitionDate), new Date(selectedBefore.acquisitionDate)))
@@ -67,6 +71,7 @@ export const TemporalEvidenceTimeline: React.FC<TemporalEvidenceTimelineProps> =
   };
 
   const handleSetAfter = (scene: TemporalScene) => {
+    if (scene.cloudCover > 35) return;
     if (!selectedBefore) {
       onSelectPair(scene, scene);
       return;
@@ -240,16 +245,18 @@ export const TemporalEvidenceTimeline: React.FC<TemporalEvidenceTimelineProps> =
                     </button>
                     <button
                       type="button"
-                      disabled={isAfter || isReanalyzing}
+                      disabled={isAfter || isReanalyzing || scene.cloudCover > 35}
                       onClick={() => handleSetAfter(scene)}
-                      className={`py-0.5 text-[10px] font-mono font-semibold rounded text-center transition-colors cursor-pointer disabled:cursor-default ${
+                      className={`py-0.5 text-[10px] font-mono font-semibold rounded text-center transition-colors cursor-pointer disabled:cursor-not-allowed ${
                         isAfter
                           ? 'bg-sky-600 text-white'
+                          : scene.cloudCover > 35
+                          ? 'bg-slate-100 text-slate-400 opacity-60'
                           : 'bg-slate-100 hover:bg-sky-100 text-slate-700 hover:text-sky-900'
                       }`}
-                      title={`Select ${format(dateObj, 'yyyy-MM-dd')} as After Scene`}
+                      title={scene.cloudCover > 35 ? `Cloud cover (${scene.cloudCover.toFixed(1)}%) exceeds 35% threshold for visual AFTER scene` : `Select ${format(dateObj, 'yyyy-MM-dd')} as After Scene`}
                     >
-                      {isAfter ? 'Selected' : 'Set After'}
+                      {isAfter ? 'Selected' : scene.cloudCover > 35 ? 'Cloud >35%' : 'Set After'}
                     </button>
                   </div>
                 </div>

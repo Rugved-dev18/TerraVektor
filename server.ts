@@ -3061,21 +3061,6 @@ async function startServer() {
       // Find After scene near end date, preferring the same Sentinel-2 tile as beforeScene
       const afterScene = await findBestScene(parsedQuery.aoi, parsedQuery.endDate, 30, explicitDemo, beforeScene.tile_id);
 
-      if (!afterScene) {
-        return res.json({
-          success: false,
-          parsedQuery,
-          beforeScene,
-          afterScene: null,
-          temporalScenes: [beforeScene],
-          analysis: null,
-          data_mode: explicitDemo ? 'demo_data' : 'no_scenes_found',
-          error: 'No suitable Sentinel-2 scenes were found for this AOI and date range.',
-          message: 'No suitable Sentinel-2 scenes were found for this AOI and date range.',
-          detail: 'No suitable Sentinel-2 scenes were found for this AOI and date range on Copernicus CDSE.'
-        });
-      }
-
       // Discover real distributed temporal Sentinel-2 observations across the range (Target 3-6 scenes)
       const preferredTile = beforeScene.tile_id || beforeScene.tile || (beforeScene.name && beforeScene.name.match(/_T([0-9]{2}[A-Z]{3})_/)?.[1]) || (parsedQuery.aoi[3] > 19.5 ? '43QCC' : '43QCA');
       const temporalRawList = await findTemporalScenes(
@@ -3088,11 +3073,65 @@ async function startServer() {
         afterScene
       );
 
-      // Default baseline & monitoring pair: earliest and latest suitable scenes from the real temporal sequence
-      const effectiveBeforeScene = temporalRawList[0] || beforeScene;
-      const effectiveAfterScene = temporalRawList.length > 1
-        ? temporalRawList[temporalRawList.length - 1]
-        : (afterScene || beforeScene);
+      // Temporal Scene-Pair Selection Logic:
+      // Requirement 1: Never select a Sentinel-2 observation with cloud cover >35% as the visual AFTER scene.
+      // Requirement 2: From the existing real temporal observations, select the latest usable observation with cloud <=35%.
+      // Requirement 3: If the latest observation is unusable, fall back to the most recent usable observation before the query end date.
+      // Requirement 4: The SAME selected scene must be used by:
+      //   - AFTER map
+      //   - Evidence Spine Monitoring Scene
+      //   - candidate spectral metrics
+      //   - temporal evidence
+      // Requirement 5: Do not generate, fabricate, or use demo imagery.
+      const isUsable = (s: any) => {
+        if (!s) return false;
+        const cloud = s.cloud_cover ?? s.cloudCover;
+        return typeof cloud === 'number' && !isNaN(cloud) && cloud <= 35;
+      };
+
+      // Select Before Scene (earliest usable observation from real sequence, fallback to beforeScene)
+      const usableScenes = temporalRawList.filter((s: any) => isUsable(s));
+      const effectiveBeforeScene = usableScenes[0] || (isUsable(beforeScene) ? beforeScene : temporalRawList[0] || beforeScene);
+
+      const queryEndTime = parsedQuery.endDate 
+        ? (new Date(parsedQuery.endDate).getTime() + (24 * 60 * 60 * 1000 - 1)) 
+        : Infinity;
+
+      let effectiveAfterScene: any = null;
+
+      // Check the latest observation in the temporal sequence
+      const latestObservation = temporalRawList.length > 0 ? temporalRawList[temporalRawList.length - 1] : null;
+
+      if (latestObservation && isUsable(latestObservation)) {
+        // Requirement 2: The latest observation is usable with cloud <= 35%
+        effectiveAfterScene = latestObservation;
+      } else {
+        // Requirement 3: The latest observation is unusable.
+        // Fall back to the most recent usable observation before the query end date.
+        const usableBeforeEndDate = temporalRawList.filter((s: any) => 
+          isUsable(s) && new Date(s.acquisition_date).getTime() <= queryEndTime
+        );
+
+        if (usableBeforeEndDate.length > 0) {
+          effectiveAfterScene = usableBeforeEndDate[usableBeforeEndDate.length - 1];
+        } else {
+          // If no usable observation before query end date, select the latest usable observation overall with cloud <= 35%
+          if (usableScenes.length > 0) {
+            effectiveAfterScene = usableScenes[usableScenes.length - 1];
+          }
+        }
+      }
+
+      // If effectiveAfterScene happens to be identical to effectiveBeforeScene and other usable scenes exist,
+      // pick distinct scenes if possible.
+      if (effectiveAfterScene && effectiveBeforeScene && effectiveAfterScene.id === effectiveBeforeScene.id) {
+        const otherUsable = usableScenes.filter((s: any) => s.id !== effectiveBeforeScene.id);
+        if (otherUsable.length > 0) {
+          effectiveAfterScene = otherUsable[otherUsable.length - 1];
+        } else {
+          effectiveAfterScene = null;
+        }
+      }
 
       const temporalScenes = temporalRawList.map((s: any) => ({
         productId: s.id,
@@ -3111,6 +3150,22 @@ async function startServer() {
         center: s.center,
         data_mode: s.data_mode
       }));
+
+      // Requirement 6: If no usable scene exists, explicitly show "No usable monitoring scene available"
+      if (!effectiveAfterScene) {
+        return res.json({
+          success: false,
+          parsedQuery,
+          beforeScene: effectiveBeforeScene,
+          afterScene: null,
+          temporalScenes,
+          analysis: null,
+          data_mode: 'no_usable_monitoring_scene',
+          error: 'No usable monitoring scene available',
+          message: 'No usable monitoring scene available',
+          detail: 'No usable monitoring scene available: All Sentinel-2 observations have cloud cover exceeding 35%.'
+        });
+      }
 
       // Call the appropriate analysis endpoint based on change type
       try {
@@ -3179,7 +3234,8 @@ async function startServer() {
                 cand,
                 temporalRawList,
                 43,
-                getTileUtmBbox(sceneTile)
+                getTileUtmBbox(sceneTile),
+                effectiveAfterScene?.id
               );
             }
           }
@@ -3521,7 +3577,8 @@ async function startServer() {
     candidate: any,
     temporalScenes: any[],
     zone: number = 43,
-    tileBbox?: [number, number, number, number]
+    tileBbox?: [number, number, number, number],
+    afterSceneId?: string
   ): Promise<any> {
     if (!temporalScenes || temporalScenes.length === 0) {
       return {
@@ -3561,7 +3618,9 @@ async function startServer() {
       const sceneName = scene.name || scene.productName || '';
 
       const isBaseline = (idx === 0);
-      const isMonitor = (idx === sortedScenes.length - 1 && sortedScenes.length > 1);
+      const isMonitor = afterSceneId
+        ? (sceneId === afterSceneId || scene.id === afterSceneId || scene.productId === afterSceneId)
+        : (idx === sortedScenes.length - 1 && sortedScenes.length > 1);
 
       // Cloud exclusion rule: Cloud cover > 35% makes observation unusable
       if (cloudCover > 35) {

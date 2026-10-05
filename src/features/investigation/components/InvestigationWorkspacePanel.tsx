@@ -40,7 +40,7 @@ interface InvestigationWorkspacePanelProps {
   candidate: CandidateRegion | null;
   candidatesList?: CandidateRegion[];
   beforeScene: SceneSummary;
-  afterScene: SceneSummary;
+  afterScene?: SceneSummary | null;
   temporalScenes?: TemporalScene[];
   onSelectCandidate?: (id: string | null) => void;
   onClose?: () => void;
@@ -245,7 +245,11 @@ export const InvestigationWorkspacePanel: React.FC<InvestigationWorkspacePanelPr
     lines.push(`# Sentinel-2 Multi-Temporal Investigation Export`);
     lines.push(`# Export Date: ${new Date().toISOString()}`);
     lines.push(`# Baseline Scene: ${beforeScene.id} (${beforeScene.acquisition_date})`);
-    lines.push(`# Monitoring Scene: ${afterScene.id} (${afterScene.acquisition_date})`);
+    if (afterScene && afterScene.cloud_cover <= 35) {
+      lines.push(`# Monitoring Scene: ${afterScene.id} (${afterScene.acquisition_date})`);
+    } else {
+      lines.push(`# Monitoring Scene: No usable monitoring scene available`);
+    }
     lines.push(`# Total Temporal Revisit Observations: ${temporalScenes.length}`);
     if (candidate) {
       lines.push(`# Inspected Candidate: ${candidate.id} (${candidate.display_name || candidate.type})`);
@@ -456,7 +460,7 @@ export const InvestigationWorkspacePanel: React.FC<InvestigationWorkspacePanelPr
   };
 
   const beforePlatform = beforeScene.name?.startsWith('S2A') ? 'S2A' : beforeScene.name?.startsWith('S2B') ? 'S2B' : 'S2';
-  const afterPlatform = afterScene.name?.startsWith('S2A') ? 'S2A' : afterScene.name?.startsWith('S2B') ? 'S2B' : 'S2';
+  const afterPlatform = afterScene?.name?.startsWith('S2A') ? 'S2A' : afterScene?.name?.startsWith('S2B') ? 'S2B' : afterScene?.name?.startsWith('S2C') ? 'S2C' : 'S2';
 
   return (
     <div className="bg-white border border-slate-200 rounded-md shadow-2xs flex flex-col h-full max-h-[820px] overflow-hidden text-slate-800 select-none">
@@ -552,7 +556,7 @@ export const InvestigationWorkspacePanel: React.FC<InvestigationWorkspacePanelPr
                   <div className="absolute left-[85%] top-1/2 -translate-y-1/2 -translate-x-1/2 flex flex-col items-center">
                     <span className="w-2.5 h-2.5 rounded-full bg-sky-600 ring-2 ring-white" />
                     <span className="text-[9px] font-mono text-slate-700 mt-1 font-semibold whitespace-nowrap">
-                      {format(new Date(afterScene.acquisition_date), 'yyyy')}
+                      {afterScene?.acquisition_date ? format(new Date(afterScene.acquisition_date), 'yyyy') : 'N/A'}
                     </span>
                     <span className="text-[8px] text-slate-500 font-mono">Monitor</span>
                   </div>
@@ -704,17 +708,25 @@ export const InvestigationWorkspacePanel: React.FC<InvestigationWorkspacePanelPr
                   <span className="font-bold text-sky-800 uppercase">03 Monitoring Scene</span>
                   <span className="text-slate-600 font-bold">{afterPlatform} &bull; L2A</span>
                 </div>
-                <div className="flex items-center justify-between text-slate-700">
-                  <span className="font-mono">{format(new Date(afterScene.acquisition_date), 'dd MMM yyyy')}</span>
-                  <span className="font-mono text-[10px] text-slate-500">Cloud: {afterScene.cloud_cover.toFixed(1)}%</span>
-                </div>
-                <div className="flex items-center justify-between text-[10px] font-mono text-slate-600 pt-0.5 border-t border-slate-100">
-                  <span>Candidate Monitoring NDVI: <strong className="text-slate-800">{candidate.after_ndvi_mean !== undefined ? candidate.after_ndvi_mean.toFixed(3) : candidate.after_ndvi?.toFixed(3) ?? 'N/A'}</strong></span>
-                  <span>NDBI: <strong className="text-slate-800">{candidate.after_ndbi_mean !== undefined ? candidate.after_ndbi_mean.toFixed(3) : candidate.after_ndbi?.toFixed(3) ?? 'N/A'}</strong></span>
-                </div>
-                <div className="text-[10px] text-slate-500 font-mono truncate">
-                  Tile {afterScene.tile_id || '43QCA'} &bull; GSD 10m
-                </div>
+                {afterScene && afterScene.cloud_cover <= 35 ? (
+                  <>
+                    <div className="flex items-center justify-between text-slate-700">
+                      <span className="font-mono">{format(new Date(afterScene.acquisition_date), 'dd MMM yyyy')}</span>
+                      <span className="font-mono text-[10px] text-slate-500">Cloud: {afterScene.cloud_cover.toFixed(1)}%</span>
+                    </div>
+                    <div className="flex items-center justify-between text-[10px] font-mono text-slate-600 pt-0.5 border-t border-slate-100">
+                      <span>Candidate Monitoring NDVI: <strong className="text-slate-800">{candidate?.after_ndvi_mean !== undefined ? candidate.after_ndvi_mean.toFixed(3) : candidate?.after_ndvi?.toFixed(3) ?? 'N/A'}</strong></span>
+                      <span>NDBI: <strong className="text-slate-800">{candidate?.after_ndbi_mean !== undefined ? candidate.after_ndbi_mean.toFixed(3) : candidate?.after_ndbi?.toFixed(3) ?? 'N/A'}</strong></span>
+                    </div>
+                    <div className="text-[10px] text-slate-500 font-mono truncate">
+                      Tile {afterScene.tile_id || '43QCA'} &bull; GSD 10m
+                    </div>
+                  </>
+                ) : (
+                  <div className="text-rose-600 font-mono text-xs py-1">
+                    No usable monitoring scene available
+                  </div>
+                )}
               </div>
             </div>
 
