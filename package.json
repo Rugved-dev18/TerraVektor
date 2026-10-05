@@ -11,6 +11,8 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@turf/helpers": "^7.4.0",
+    "@turf/simplify": "^7.4.0",
     "axios": "^1.6.2",
     "cors": "^2.8.5",
     "date-fns": "^2.30.0",

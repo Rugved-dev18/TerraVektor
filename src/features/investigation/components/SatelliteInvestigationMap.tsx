@@ -21,6 +21,8 @@ import {
 } from 'lucide-react';
 import { format } from 'date-fns';
 import { BuiltUpAnalysisResult, ChangeAnalysisResult, CandidateRegion } from '../../../types';
+import { simplify as turfSimplify } from '@turf/simplify';
+import { polygon as turfPolygon } from '@turf/helpers';
 import { MapColorMode, MAP_COLOR_MODES } from '../../../types/mapModes';
 import { MapColorFilters, getMapColorFilterStyle } from '../../../components/MapColorFilters';
 import { MapColorModeSelector } from '../../../components/MapColorModeSelector';
@@ -37,6 +39,128 @@ export interface SceneSummary {
 }
 
 export type { CandidateRegion };
+
+/**
+ * Traces the contiguous geographic boundary contour of a connected pixel component.
+ * Converts individual 10m grid cells into a single closed GeoJSON/Leaflet polygon ring
+ * without creating separate pixel squares or smoothing/rounding the authentic 10m geometry.
+ */
+function traceCandidatePixelFootprint(pixelCoords: Array<{ lon: number; lat: number }>): [number, number][][] | null {
+  if (!pixelCoords || pixelCoords.length === 0) return null;
+  const half = 0.000045; // ~5m half-width for Sentinel-2 10m pixel
+  if (pixelCoords.length === 1) {
+    const p = pixelCoords[0];
+    return [[
+      [p.lat - half, p.lon - half],
+      [p.lat + half, p.lon - half],
+      [p.lat + half, p.lon + half],
+      [p.lat - half, p.lon + half],
+      [p.lat - half, p.lon - half]
+    ]];
+  }
+
+  let minLon = Infinity, minLat = Infinity;
+  for (const p of pixelCoords) {
+    if (p.lon < minLon) minLon = p.lon;
+    if (p.lat < minLat) minLat = p.lat;
+  }
+  let stepLon = 0.00009, stepLat = 0.00009;
+  for (let i = 0; i < pixelCoords.length; i++) {
+    for (let j = i + 1; j < pixelCoords.length; j++) {
+      const dLon = Math.abs(pixelCoords[i].lon - pixelCoords[j].lon);
+      const dLat = Math.abs(pixelCoords[i].lat - pixelCoords[j].lat);
+      if (dLon > 0.00002 && dLon < stepLon) stepLon = dLon;
+      if (dLat > 0.00002 && dLat < stepLat) stepLat = dLat;
+    }
+  }
+
+  const cells = new Set<string>();
+  const cellList: [number, number][] = [];
+  for (const p of pixelCoords) {
+    const gx = Math.round((p.lon - minLon) / stepLon);
+    const gy = Math.round((p.lat - minLat) / stepLat);
+    const key = `${gx},${gy}`;
+    if (!cells.has(key)) {
+      cells.add(key);
+      cellList.push([gx, gy]);
+    }
+  }
+
+  const edges = new Map<string, string[]>();
+  function addEdge(start: string, end: string) {
+    let arr = edges.get(start);
+    if (!arr) { arr = []; edges.set(start, arr); }
+    arr.push(end);
+  }
+
+  for (const [gx, gy] of cellList) {
+    if (!cells.has(`${gx},${gy - 1}`)) addEdge(`${gx},${gy}`, `${gx + 1},${gy}`);
+    if (!cells.has(`${gx + 1},${gy}`)) addEdge(`${gx + 1},${gy}`, `${gx + 1},${gy + 1}`);
+    if (!cells.has(`${gx},${gy + 1}`)) addEdge(`${gx + 1},${gy + 1}`, `${gx},${gy + 1}`);
+    if (!cells.has(`${gx - 1},${gy}`)) addEdge(`${gx},${gy + 1}`, `${gx},${gy}`);
+  }
+
+  const rings: [number, number][][] = [];
+  for (const [startPoint, targets] of edges.entries()) {
+    while (targets.length > 0) {
+      const ring: [number, number][] = [];
+      let curr = startPoint;
+      let next = targets.pop()!;
+      const [sx, sy] = curr.split(',').map(Number);
+      ring.push([sx, sy]);
+      let maxSteps = cellList.length * 8 + 32;
+      while (next && maxSteps-- > 0) {
+        const [nx, ny] = next.split(',').map(Number);
+        ring.push([nx, ny]);
+        if (next === startPoint) break;
+        const nextTargets = edges.get(next);
+        if (nextTargets && nextTargets.length > 0) {
+          curr = next;
+          next = nextTargets.pop()!;
+        } else break;
+      }
+      if (ring.length >= 4) {
+        // Collinear simplification along horizontal and vertical grid segments
+        const simplified: [number, number][] = [ring[0]];
+        for (let i = 1; i < ring.length - 1; i++) {
+          const prev = simplified[simplified.length - 1];
+          const c = ring[i];
+          const n = ring[i + 1];
+          const dx1 = c[0] - prev[0];
+          const dy1 = c[1] - prev[1];
+          const dx2 = n[0] - c[0];
+          const dy2 = n[1] - c[1];
+          if (dx1 * dy2 !== dx2 * dy1) {
+            simplified.push(c);
+          }
+        }
+        simplified.push(ring[ring.length - 1]);
+
+        const latLngRing = simplified.map(([vx, vy]) => [
+          minLat + (vy - 0.5) * stepLat,
+          minLon + (vx - 0.5) * stepLon
+        ] as [number, number]);
+
+        // Turf.js geometry simplification: Convert blocky 10m pixel clusters into cleaner GeoJSON polygons
+        let finalLatLngRing: [number, number][] = latLngRing;
+        try {
+          if (latLngRing.length >= 4) {
+            const geoRing = latLngRing.map(([lat, lon]) => [lon, lat]);
+            const polyFeature = turfPolygon([geoRing]);
+            const turfResult = turfSimplify(polyFeature, { tolerance: 0.00005, highQuality: true, mutate: false });
+            if (turfResult?.geometry?.coordinates?.[0]?.length >= 4) {
+              finalLatLngRing = (turfResult.geometry.coordinates[0] as [number, number][]).map(([lon, lat]) => [lat, lon]);
+            }
+          }
+        } catch {
+          // Fall back to collinear-simplified latLngRing if Turf fails
+        }
+        rings.push(finalLatLngRing);
+      }
+    }
+  }
+  return rings.length > 0 ? rings : null;
+}
 
 interface SatelliteInvestigationMapProps {
   beforeScene: SceneSummary;
@@ -350,77 +474,73 @@ export const SatelliteInvestigationMap: React.FC<SatelliteInvestigationMapProps>
 
       const candidateGroup = L.featureGroup();
 
-      // 1. Render actual candidate GeoJSON Polygon / MultiPolygon
+      // 1. Convert each connected candidate pixel component into a geographic polygon/GeoJSON Polygon or MultiPolygon
+      // and render the resulting polygon geometry on Leaflet instead of drawing individual 10m pixel rectangles.
       let hasGeometry = false;
+      let polygonLatLngs: [number, number][][] | [number, number][][][] | null = null;
+
       if (cand.geometry && cand.geometry.coordinates) {
         if (cand.geometry.type === 'Polygon' && Array.isArray(cand.geometry.coordinates[0]) && cand.geometry.coordinates[0].length >= 3) {
-          const latLngs = (cand.geometry.coordinates as number[][][]).map(ring =>
+          polygonLatLngs = (cand.geometry.coordinates as number[][][]).map(ring =>
             ring.map(pt => [pt[1], pt[0]] as [number, number])
           );
-
-          const poly = L.polygon(latLngs, {
-            color: strokeColor,
-            weight: isSelected ? 2.5 : 1.5,
-            dashArray: isSelected ? undefined : '3, 3',
-            fillColor: fillColor,
-            fillOpacity: isSelected ? 0.35 : 0.12,
-            className: isSelected ? 'candidate-selected-pulsing' : 'candidate-vector'
-          });
-          candidateGroup.addLayer(poly);
-          hasGeometry = true;
-        } else if (cand.geometry.type === 'MultiPolygon') {
-          const multiLatLngs = (cand.geometry.coordinates as number[][][][]).map(poly =>
+        } else if (cand.geometry.type === 'MultiPolygon' && Array.isArray(cand.geometry.coordinates)) {
+          polygonLatLngs = (cand.geometry.coordinates as number[][][][]).map(poly =>
             poly.map(ring => ring.map(pt => [pt[1], pt[0]] as [number, number]))
           );
-
-          const poly = L.polygon(multiLatLngs, {
-            color: strokeColor,
-            weight: isSelected ? 2.5 : 1.5,
-            dashArray: isSelected ? undefined : '3, 3',
-            fillColor: fillColor,
-            fillOpacity: isSelected ? 0.35 : 0.12,
-            className: isSelected ? 'candidate-selected-pulsing' : 'candidate-vector'
-          });
-          candidateGroup.addLayer(poly);
-          hasGeometry = true;
         }
       }
 
-      // 2. Render individual 10m detected change pixel footprints (10m x 10m ≈ 100 m² per pixel)
+      // If geometry was not provided or empty, convert the connected pixel component into a geographic polygon
       const pixelCoords = cand.pixel_coordinates || (cand as any).pixelCoords;
-      if (Array.isArray(pixelCoords) && pixelCoords.length > 0) {
-        const halfPixelDeg = 0.000045; // ~5m half-width in degrees for Sentinel-2 10m grid
-        pixelCoords.forEach(pc => {
-          const pxBounds = L.latLngBounds(
-            [pc.lat - halfPixelDeg, pc.lon - halfPixelDeg],
-            [pc.lat + halfPixelDeg, pc.lon + halfPixelDeg]
-          );
-          const pxRect = L.rectangle(pxBounds, {
-            color: strokeColor,
-            weight: 0.75,
-            fillColor: fillColor,
-            fillOpacity: isSelected ? 0.45 : 0.18,
-            interactive: false
-          });
-          candidateGroup.addLayer(pxRect);
-        });
-        hasGeometry = true;
+      if (!polygonLatLngs && Array.isArray(pixelCoords) && pixelCoords.length > 0) {
+        const tracedRings = traceCandidatePixelFootprint(pixelCoords);
+        if (tracedRings && tracedRings.length > 0) {
+          polygonLatLngs = tracedRings;
+        }
       }
 
-      // If no polygon or pixels available, create a tight 10m cell from centroid (never the large bbox!)
-      if (!hasGeometry && cand.centroid) {
+      if (polygonLatLngs && polygonLatLngs.length > 0) {
+        const poly = L.polygon(polygonLatLngs as any, {
+          color: strokeColor,
+          weight: isSelected ? 2.5 : 1.75,
+          dashArray: undefined,
+          fillColor: fillColor,
+          fillOpacity: isSelected ? 0.40 : 0.25,
+          className: isSelected ? 'candidate-selected-pulsing cursor-pointer' : 'candidate-vector cursor-pointer',
+          interactive: true
+        });
+        poly.on('click', (e) => {
+          L.DomEvent.stopPropagation(e);
+          if (onSelectCandidate) {
+            onSelectCandidate(cand.id);
+          }
+        });
+        candidateGroup.addLayer(poly);
+        hasGeometry = true;
+      } else if (cand.centroid) {
+        // Fallback: If no polygon or pixels available, create a tight 10m cell from centroid (never the large bbox!)
         const halfPixelDeg = 0.000045;
         const cellBounds = L.latLngBounds(
-          [cand.centroid[1] - halfPixelDeg * 2, cand.centroid[0] - halfPixelDeg * 2],
-          [cand.centroid[1] + halfPixelDeg * 2, cand.centroid[0] + halfPixelDeg * 2]
+          [cand.centroid[1] - halfPixelDeg, cand.centroid[0] - halfPixelDeg],
+          [cand.centroid[1] + halfPixelDeg, cand.centroid[0] + halfPixelDeg]
         );
         const cell = L.rectangle(cellBounds, {
           color: strokeColor,
           weight: isSelected ? 2.5 : 1.5,
           fillColor: fillColor,
-          fillOpacity: isSelected ? 0.35 : 0.12
+          fillOpacity: isSelected ? 0.35 : 0.15,
+          className: isSelected ? 'candidate-selected-pulsing cursor-pointer' : 'candidate-vector cursor-pointer',
+          interactive: true
+        });
+        cell.on('click', (e) => {
+          L.DomEvent.stopPropagation(e);
+          if (onSelectCandidate) {
+            onSelectCandidate(cand.id);
+          }
         });
         candidateGroup.addLayer(cell);
+        hasGeometry = true;
       }
 
       // 3. Candidate Label / Tooltip

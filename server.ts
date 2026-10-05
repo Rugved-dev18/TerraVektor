@@ -6,6 +6,8 @@ import { fileURLToPath } from 'url';
 import { Buffer } from 'buffer';
 import jpeg from 'jpeg-js';
 import * as GeoTIFF from 'geotiff';
+import { simplify as turfSimplify } from '@turf/simplify';
+import { polygon as turfPolygon } from '@turf/helpers';
 function extractLocationName(query: string): string | null {
   if (!query || typeof query !== 'string') return null;
   const lowerQuery = query.toLowerCase().trim();
@@ -2103,29 +2105,24 @@ async function startServer() {
         const isConstruction = cand.type === 'possible_construction_candidate' || cand.type === 'new_construction_candidate';
         const color = isConstruction ? '#ea580c' : '#9333ea';
 
-        // 1. Precise GeoJSON Polygon contour tracing detected change boundary
-        if (cand.geometry?.coordinates?.[0] && cand.geometry.coordinates[0].length >= 4) {
-          const points = cand.geometry.coordinates[0].map(([lon, lat]: [number, number]) => {
-            const px = Math.max(0, Math.min(512, ((lon - minLon) / lonSpan) * 512));
-            const py = Math.max(0, Math.min(512, ((maxLat - lat) / latSpan) * 512));
-            return `${px.toFixed(1)},${py.toFixed(1)}`;
-          }).join(' ');
+        // Connected candidate polygon contour tracing detected change boundary
+        if (cand.geometry?.coordinates) {
+          const rings: [number, number][][] = cand.geometry.type === 'MultiPolygon'
+            ? (cand.geometry.coordinates as any[]).map((poly: any) => poly[0])
+            : cand.geometry.coordinates;
 
-          candidateElements += `
-            <polygon points="${points}" fill="${color}" fill-opacity="0.45" stroke="${color}" stroke-width="1.5" />
-          `;
-        }
+          rings.forEach((ring: [number, number][]) => {
+            if (Array.isArray(ring) && ring.length >= 3) {
+              const points = ring.map(([lon, lat]: [number, number]) => {
+                const px = Math.max(0, Math.min(512, ((lon - minLon) / lonSpan) * 512));
+                const py = Math.max(0, Math.min(512, ((maxLat - lat) / latSpan) * 512));
+                return `${px.toFixed(1)},${py.toFixed(1)}`;
+              }).join(' ');
 
-        // 2. Individual 10m change pixel footprints
-        if (Array.isArray(cand.pixel_coordinates)) {
-          const pw = Math.max(2, (10 / (lonSpan * 105567)) * 512);
-          const ph = Math.max(2, (10 / (latSpan * 110650)) * 512);
-          cand.pixel_coordinates.forEach((pt: { lon: number; lat: number }) => {
-            const px = ((pt.lon - minLon) / lonSpan) * 512;
-            const py = ((maxLat - pt.lat) / latSpan) * 512;
-            candidateElements += `
-              <rect x="${(px - pw / 2).toFixed(1)}" y="${(py - ph / 2).toFixed(1)}" width="${pw.toFixed(1)}" height="${ph.toFixed(1)}" fill="${color}" fill-opacity="0.6" stroke="${color}" stroke-width="0.5"/>
-            `;
+              candidateElements += `
+                <polygon points="${points}" fill="${color}" fill-opacity="0.38" stroke="${color}" stroke-width="1.75" />
+              `;
+            }
           });
         }
       });
@@ -3491,13 +3488,31 @@ async function startServer() {
       }
     }
 
+    // Turf.js geometry simplification: Convert blocky 10m pixel clusters into cleaner, simplified GeoJSON polygons
+    let simplifiedCoordinates: number[][][] = rings.length > 0 ? rings : [[ ]];
+    try {
+      if (rings.length > 0 && rings[0].length >= 4) {
+        // Construct GeoJSON Polygon feature for Turf.js
+        const polyFeature = turfPolygon(rings);
+        // Apply Turf.js simplify: tolerance 0.00005 deg (~5.5m) cleans up the blocky 10m staircase steps
+        // into a smooth, authentic footprint without collapsing the polygon or distorting the boundary
+        const simplified = turfSimplify(polyFeature, { tolerance: 0.00005, highQuality: true, mutate: false });
+        if (simplified?.geometry?.coordinates?.[0]?.length >= 4) {
+          simplifiedCoordinates = simplified.geometry.coordinates as number[][][];
+        }
+      }
+    } catch (err) {
+      console.warn('[Turf Simplify] Simplification fallback to raw rings:', err);
+    }
+
+    // Preserve exact detected area: strictly calculated from the original pixel count (100 m² per pixel)
     const areaM2 = clusterCells.length * 100;
     const areaHa = Number((areaM2 / 10000).toFixed(4));
 
     return {
       geometry: {
         type: 'Polygon',
-        coordinates: rings.length > 0 ? rings : [[ ]]
+        coordinates: simplifiedCoordinates
       },
       pixelCoords,
       bbox: [
