@@ -3926,7 +3926,7 @@ async function startServer() {
             break;
           }
         }
-        if (ring.length >= 4) {
+        if (next === startPoint && ring.length >= 4) {
           // Simplify colinear segments along horizontal/vertical raster edges
           const simplified: [number, number][] = [ring[0]];
           for (let i = 1; i < ring.length - 1; i++) {
@@ -3950,9 +3950,40 @@ async function startServer() {
             const [lon, lat] = utmToLatLon(easting, northing, zone);
             return [Number(lon.toFixed(5)), Number(lat.toFixed(5))];
           });
-          rings.push(geoRing);
+          if (geoRing.length >= 4) {
+            if (geoRing[0][0] !== geoRing[geoRing.length - 1][0] || geoRing[0][1] !== geoRing[geoRing.length - 1][1]) {
+              geoRing.push([geoRing[0][0], geoRing[0][1]]);
+            }
+            rings.push(geoRing);
+          }
         }
       }
+    }
+
+    if (rings.length === 0 && clusterPixels.length > 0) {
+      let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+      for (const p of clusterPixels) {
+        const cx = p % gridW;
+        const cy = Math.floor(p / gridW);
+        if (cx < minX) minX = cx;
+        if (cx + 1 > maxX) maxX = cx + 1;
+        if (cy < minY) minY = cy;
+        if (cy + 1 > maxY) maxY = cy + 1;
+      }
+      const corners: [number, number][] = [
+        [minX, minY],
+        [maxX, minY],
+        [maxX, maxY],
+        [minX, maxY],
+        [minX, minY]
+      ];
+      const fallbackGeoRing = corners.map(([gx, gy]) => {
+        const easting = minE + gx * ((maxE - minE) / gridW);
+        const northing = maxN - gy * ((maxN - minN) / gridH);
+        const [lon, lat] = utmToLatLon(easting, northing, zone);
+        return [Number(lon.toFixed(5)), Number(lat.toFixed(5))];
+      });
+      rings.push(fallbackGeoRing);
     }
 
     rings.sort((a, b) => b.length - a.length);
@@ -4338,16 +4369,57 @@ async function startServer() {
               // Mathematical invariant: delta_ndbi = after_ndbi_mean - before_ndbi_mean
               const delta_ndbi = Number((after_ndbi_mean - before_ndbi_mean).toFixed(3));
 
-              // Derive actual 10m Sentinel-2 change footprint (10m x 10m = 100 m² per pixel)
-              const cand10mPixelCount = Math.min(Math.max(cl.length, 10), 45);
-              const comp = generate10mConnectedComponent(cand10mPixelCount, centerEasting, centerNorthing, zone, idx + 42);
+              // Derive actual Sentinel-2 change footprint directly from real cluster pixels
+              const pixel_count = cl.length;
+              const area_m2 = pixel_count * 100;
+              const area_ha = Number((area_m2 / 10000).toFixed(4));
 
-              const pixel_count = comp.pixelCoords.length;
-              const area_m2 = comp.areaM2;
-              const area_ha = comp.areaHa;
-              const centroid: [number, number] = comp.centroid;
-              const bounding_box: [number, number, number, number] = comp.bbox;
-              const geometry = comp.geometry;
+              const pixel_coordinates: Array<{ lon: number; lat: number }> = [];
+              let minLon = 180, maxLon = -180, minLat = 90, maxLat = -90;
+              let sumLon = 0, sumLat = 0;
+
+              for (const p of cl) {
+                const cy = Math.floor(p / w);
+                const cx = p % w;
+                const easting = minE + (cx + 0.5) * ((maxE - minE) / w);
+                const northing = maxN - (cy + 0.5) * ((maxN - minN) / h);
+                const [lon, lat] = utmToLatLon(easting, northing, zone);
+                const pLon = Number(lon.toFixed(5));
+                const pLat = Number(lat.toFixed(5));
+                pixel_coordinates.push({ lon: pLon, lat: pLat });
+                sumLon += lon;
+                sumLat += lat;
+                if (lon < minLon) minLon = lon;
+                if (lon > maxLon) maxLon = lon;
+                if (lat < minLat) minLat = lat;
+                if (lat > maxLat) maxLat = lat;
+              }
+
+              // Medoid centroid strictly inside the actual detected change cluster
+              const meanLon = sumLon / cl.length;
+              const meanLat = sumLat / cl.length;
+              let bestDist = Infinity;
+              let cLon = meanLon;
+              let cLat = meanLat;
+              for (const pc of pixel_coordinates) {
+                const dist = (pc.lon - meanLon) ** 2 + (pc.lat - meanLat) ** 2;
+                if (dist < bestDist) {
+                  bestDist = dist;
+                  cLon = pc.lon;
+                  cLat = pc.lat;
+                }
+              }
+              const centroid: [number, number] = [Number(cLon.toFixed(5)), Number(cLat.toFixed(5))];
+
+              const bounding_box: [number, number, number, number] = [
+                Number(minLon.toFixed(5)),
+                Number(minLat.toFixed(5)),
+                Number(maxLon.toFixed(5)),
+                Number(maxLat.toFixed(5))
+              ];
+
+              // Real geographic polygon extracted from the exact raster cluster cl
+              const geometry = extractClusterPolygon(cl, w, h, minE, maxE, minN, maxN, zone);
 
               // Scientifically conservative classification hierarchy
               let classification = 'spectral_change';
@@ -4382,7 +4454,7 @@ async function startServer() {
                 bounding_box,
                 bbox: bounding_box,
                 geometry,
-                pixel_coordinates: comp.pixelCoords,
+                pixel_coordinates,
                 before_ndvi: before_ndvi_mean,
                 before_ndvi_mean,
                 after_ndvi: after_ndvi_mean,
