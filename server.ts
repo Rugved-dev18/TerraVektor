@@ -1263,7 +1263,7 @@ async function startServer() {
           body: bodyParams.toString()
         });
         if (tokenRes.ok) {
-          const tokenData = await tokenRes.json();
+          const tokenData = await tokenRes.json() as { access_token?: string; expires_in?: number };
           if (tokenData.access_token) {
             cdseTokenState.token = tokenData.access_token;
             cdseTokenState.expiresAt = Date.now() + ((tokenData.expires_in || 600) * 1000);
@@ -1289,7 +1289,7 @@ async function startServer() {
           body: bodyParams.toString()
         });
         if (tokenRes.ok) {
-          const tokenData = await tokenRes.json();
+          const tokenData = await tokenRes.json() as { access_token?: string; expires_in?: number };
           if (tokenData.access_token) {
             cdseTokenState.token = tokenData.access_token;
             cdseTokenState.expiresAt = Date.now() + ((tokenData.expires_in || 600) * 1000);
@@ -2857,7 +2857,7 @@ async function startServer() {
         return null;
       }
 
-      const data = await response.json();
+      const data = await response.json() as { results?: any[] };
       
       if (!data.results || data.results.length === 0) {
         if (isDemo) {
@@ -2893,7 +2893,7 @@ async function startServer() {
       const aoiCenterLon = (aoi[0] + aoi[2]) / 2;
       const aoiCenterLat = (aoi[1] + aoi[3]) / 2;
 
-      const sorted = data.results
+      const sorted = (data.results || [])
         .filter((p: any) => isDemo || p.data_mode !== 'demo_data')
         .sort((a: any, b: any) => {
           if (preferredTileId) {
@@ -3220,7 +3220,7 @@ async function startServer() {
           });
         }
 
-        const analysis = await analysisResponse.json();
+        const analysis = await analysisResponse.json() as { candidates?: any[]; data_mode?: string };
 
         // Ensure all candidates have temporal_evidence attached
         if (analysis && Array.isArray(analysis.candidates)) {
@@ -3245,7 +3245,7 @@ async function startServer() {
           afterScene: effectiveAfterScene,
           temporalScenes,
           analysis,
-          data_mode: analysis.data_mode,
+          data_mode: (analysis as any).data_mode,
           execution_time_ms: Date.now() - startTime
         });
 
