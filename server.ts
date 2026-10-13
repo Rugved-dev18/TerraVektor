@@ -8,6 +8,8 @@ import jpeg from 'jpeg-js';
 import * as GeoTIFF from 'geotiff';
 import { simplify as turfSimplify } from '@turf/simplify';
 import { polygon as turfPolygon } from '@turf/helpers';
+import { AOI_PRESETS } from './src/features/semantic-search/parser/vocabulary';
+
 function extractLocationName(query: string): string | null {
   if (!query || typeof query !== 'string') return null;
   const lowerQuery = query.toLowerCase().trim();
@@ -2577,17 +2579,6 @@ async function startServer() {
     locationDetails?: any;
     locationCandidates?: any[];
   }
-
-  // AOI Presets for Indian cities
-  const AOI_PRESETS: Record<string, [number, number, number, number]> = {
-    'pune': [73.70, 18.40, 74.05, 18.70],
-    'mumbai': [72.75, 18.90, 73.10, 19.25],
-    'bengaluru': [77.45, 12.85, 77.75, 13.10],
-    'delhi': [76.90, 28.45, 77.35, 28.85],
-    'chennai': [80.10, 12.90, 80.35, 13.20],
-    'jaipur': [75.65, 26.80, 75.95, 27.05],
-    'nashik': [73.63, 19.85, 73.95, 20.17]
-  };
 
   // Expanded location name normalization with variations
   const LOCATION_ALIASES: Record<string, string> = {
