@@ -2007,8 +2007,73 @@ async function startServer() {
           console.warn(`[Sentinel-2 Mirror] Thumbnail fetch failed for ${productId}:`, mirrorErr.message);
         }
 
-        // 2. Fallback to COG TCI overview (slower, GeoTIFF parsing) - SKIP FOR NOW due to timeout issues
-        // The GeoTIFF library is downloading too much data. This needs to be fixed with proper range requests.
+        // 2. Fallback to COG TCI overview using proper range request configuration
+        try {
+          console.log(`[Preview Handler] Attempting TCI COG overview with range requests for ${productId}`);
+
+          // Use geotiff with remote source configuration for proper range request support
+          const tiff = await GeoTIFF.fromUrl(mirrorTciUrl, {
+            allowFullFile: false, // Prevent full file download
+            headers: {
+              'Accept': 'image/tiff; application=geotiff; profile=cloud-optimized'
+            }
+          });
+
+          const count = await tiff.getImageCount();
+          console.log(`[Preview Handler] TCI has ${count} overview levels`);
+
+          // Select smallest overview for fastest load
+          let bestImg = await tiff.getImage(count - 1);
+          for (let i = 0; i < count; i++) {
+            const im = await tiff.getImage(i);
+            const w = im.getWidth();
+            const h = im.getHeight();
+            console.log(`[Preview Handler] Overview ${i}: ${w}x${h}`);
+            // Prefer smallest overviews (< 200px) for fast preview
+            if (w < 200 && w > 50) {
+              bestImg = im;
+              break;
+            }
+          }
+
+          const w = bestImg.getWidth();
+          const h = bestImg.getHeight();
+          console.log(`[Preview Handler] Using overview ${w}x${h}`);
+
+          // Read only the overview data with timeout
+          const readPromise = bestImg.readRasters();
+          const timeoutPromise = new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error('TCI raster read timeout')), 10000)
+          );
+          const rasters = await Promise.race([readPromise, timeoutPromise]);
+
+          const rgba = Buffer.alloc(w * h * 4);
+          const r = rasters[0] as any;
+          const g = rasters[1] as any;
+          const b = rasters[2] as any;
+          for (let i = 0; i < w * h; i++) {
+            rgba[i * 4] = r[i];
+            rgba[i * 4 + 1] = g[i];
+            rgba[i * 4 + 2] = b[i];
+            rgba[i * 4 + 3] = 255;
+          }
+          const encoded = jpeg.encode({ data: rgba, width: w, height: h }, 88);
+          const buffer = Buffer.from(encoded.data);
+
+          console.log(`[Preview Handler] TCI COG overview fetch succeeded for ${productId}, size: ${buffer.length} bytes`);
+          previewCache.set(productId, {
+            buffer,
+            contentType: 'image/jpeg',
+            source: 'sentinel2_l2a_cog_overview',
+            timestamp: Date.now()
+          });
+          res.setHeader('Content-Type', 'image/jpeg');
+          res.setHeader('X-Preview-Source', 'sentinel2_l2a_cog_overview');
+          res.setHeader('Cache-Control', 'public, max-age=86400');
+          return res.send(buffer);
+        } catch (cogErr: any) {
+          console.warn(`[Sentinel-2 COG] TCI overview fetch failed for ${productId}:`, cogErr.message);
+        }
       } else {
         console.log(`[Preview Handler] Could not parse tile/date from product: tileMatch=${tileMatch}, dateMatch=${dateMatch}`);
       }
@@ -3554,7 +3619,12 @@ async function startServer() {
     if (overviewRasterCache.has(cacheKey)) {
       return overviewRasterCache.get(cacheKey)!;
     }
-    const tiff = await GeoTIFF.fromUrl(baseUrl + band + '.tif');
+    const tiff = await GeoTIFF.fromUrl(baseUrl + band + '.tif', {
+      allowFullFile: false,
+      headers: {
+        'Accept': 'image/tiff; application=geotiff; profile=cloud-optimized'
+      }
+    });
     const count = await tiff.getImageCount();
     // Prefer smallest overview for fastest load
     let bestImg = await tiff.getImage(count - 1);
