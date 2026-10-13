@@ -1884,7 +1884,7 @@ async function startServer() {
       return res.send(svgBuffer);
     }
 
-    // C. Official CDSE OData Quicklook via Bearer Token (if available)
+    // C. Official CDSE OData Quicklook via Bearer Token (if available) - Try with auth first
     const authHeader = await getCDSEAuthHeader();
     if (authHeader) {
       try {
@@ -1893,7 +1893,8 @@ async function startServer() {
           headers: {
             'Authorization': authHeader,
             'Accept': 'image/jpeg, image/png, */*'
-          }
+          },
+          signal: AbortSignal.timeout(8000)
         });
         if (qRes.ok) {
           const arrayBuf = await qRes.arrayBuffer();
@@ -1906,11 +1907,34 @@ async function startServer() {
           return res.send(buffer);
         }
       } catch (e: any) {
-        console.warn(`[CDSE Quicklook] Token request failed for ${productId}:`, e.message);
+        console.warn(`[CDSE Quicklook] Auth request failed for ${productId}:`, e.message);
       }
     }
 
-    // D. Resolve exact Sentinel-2 L2A tile/date parameters
+    // C2. Try CDSE Quicklook without auth (public access)
+    try {
+      const cdseQuicklookUrl = `https://download.dataspace.copernicus.eu/odata/v1/Products(${productId})/Quicklook/$value`;
+      const qRes = await fetch(cdseQuicklookUrl, {
+        headers: {
+          'Accept': 'image/jpeg, image/png, */*'
+        },
+        signal: AbortSignal.timeout(8000)
+      });
+      if (qRes.ok) {
+        const arrayBuf = await qRes.arrayBuffer();
+        const buffer = Buffer.from(arrayBuf);
+        const cType = qRes.headers.get('content-type') || 'image/jpeg';
+        previewCache.set(productId, { buffer, contentType: cType, source: 'cdse_quicklook_public', timestamp: Date.now() });
+        res.setHeader('Content-Type', cType);
+        res.setHeader('X-Preview-Source', 'cdse_quicklook_public');
+        res.setHeader('Cache-Control', 'public, max-age=86400');
+        return res.send(buffer);
+      }
+    } catch (e: any) {
+      console.warn(`[CDSE Quicklook] Public request failed for ${productId}:`, e.message);
+    }
+
+    // D. Resolve exact Sentinel-2 L2A tile/date parameters and try public COG mirror as fallback
     let targetProduct: any = null;
     for (const entry of sentinel2Cache.values()) {
       const found = entry.payload?.results?.find((p: any) => p.id === productId);
@@ -1937,7 +1961,7 @@ async function startServer() {
             name: metaData.Name,
             acquisition_date: metaData.ContentDate?.Start || metaData.OriginDate,
             tile_id: attrs.tileId,
-            platform: attrs.platformSerialIdentifier ? `Sentinel-2${attrs.platformSerialIdentifier}` : (metaData.Name?.startsWith('S2A') ? 'Sentinel-2A' : 'Sentinel-2B')
+            platform: attrs.platformSerialIdentifier ? `Sentinel-2${attrs.platformSerialIdentifier}` : (metaData.Name?.startsWith('S2A') ? 'Sentinel-2A' : metaData.Name?.startsWith('S2C') ? 'Sentinel-2C' : 'Sentinel-2B')
           };
         }
       } catch (e: any) {
@@ -1957,55 +1981,14 @@ async function startServer() {
         const cleanDate = dateMatch.replace(/-/g, '');
         const year = cleanDate.slice(0, 4);
         const monthNum = parseInt(cleanDate.slice(4, 6), 10);
-        const platform = targetProduct.name.startsWith('S2A') ? 'S2A' : 'S2B';
+        const platform = targetProduct.name.startsWith('S2A') ? 'S2A' : targetProduct.name.startsWith('S2C') ? 'S2C' : 'S2B';
 
         const mirrorTciUrl = `https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/${utm}/${latBand}/${square}/${year}/${monthNum}/${platform}_${tile}_${cleanDate}_0_L2A/TCI.tif`;
         const mirrorThumbUrl = `https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/${utm}/${latBand}/${square}/${year}/${monthNum}/${platform}_${tile}_${cleanDate}_0_L2A/thumbnail.jpg`;
 
-        // 1. Try fetching high-resolution 687x687 Overview from Cloud-Optimized GeoTIFF (TCI.tif)
+        // 1. Try COG thumbnail.jpg first (small, fast, no GeoTIFF parsing)
         try {
-          const fetchPromise = (async () => {
-            const tiff = await GeoTIFF.fromUrl(mirrorTciUrl);
-            const img = await tiff.getImage(4); // Overview 4 is 687 x 687
-            const w = img.getWidth();
-            const h = img.getHeight();
-            const rasters = await img.readRasters();
-            const rgba = Buffer.alloc(w * h * 4);
-            const r = rasters[0] as any;
-            const g = rasters[1] as any;
-            const b = rasters[2] as any;
-            for (let i = 0; i < w * h; i++) {
-              rgba[i * 4] = r[i];
-              rgba[i * 4 + 1] = g[i];
-              rgba[i * 4 + 2] = b[i];
-              rgba[i * 4 + 3] = 255;
-            }
-            const encoded = jpeg.encode({ data: rgba, width: w, height: h }, 88);
-            return Buffer.from(encoded.data);
-          })();
-
-          const timeoutPromise = new Promise<null>((_, reject) => setTimeout(() => reject(new Error('TCI timeout')), 3500));
-          const highResBuffer = await Promise.race([fetchPromise, timeoutPromise]);
-
-          if (highResBuffer) {
-            previewCache.set(productId, {
-              buffer: highResBuffer,
-              contentType: 'image/jpeg',
-              source: 'sentinel2_l2a_cog_overview',
-              timestamp: Date.now()
-            });
-            res.setHeader('Content-Type', 'image/jpeg');
-            res.setHeader('X-Preview-Source', 'sentinel2_l2a_cog_overview');
-            res.setHeader('Cache-Control', 'public, max-age=86400');
-            return res.send(highResBuffer);
-          }
-        } catch {
-          // Fall back gracefully to standard thumbnail
-        }
-
-        // 2. Fallback to thumbnail.jpg if TCI range request fails or times out
-        try {
-          const imgRes = await fetch(mirrorThumbUrl);
+          const imgRes = await fetch(mirrorThumbUrl, { signal: AbortSignal.timeout(5000) });
           if (imgRes.ok) {
             const arrayBuf = await imgRes.arrayBuffer();
             const buffer = Buffer.from(arrayBuf);
@@ -2021,8 +2004,13 @@ async function startServer() {
             return res.send(buffer);
           }
         } catch (mirrorErr: any) {
-          console.warn(`[Sentinel-2 Mirror] Image fetch failed for ${productId}:`, mirrorErr.message);
+          console.warn(`[Sentinel-2 Mirror] Thumbnail fetch failed for ${productId}:`, mirrorErr.message);
         }
+
+        // 2. Fallback to COG TCI overview (slower, GeoTIFF parsing) - SKIP FOR NOW due to timeout issues
+        // The GeoTIFF library is downloading too much data. This needs to be fixed with proper range requests.
+      } else {
+        console.log(`[Preview Handler] Could not parse tile/date from product: tileMatch=${tileMatch}, dateMatch=${dateMatch}`);
       }
     }
 
@@ -3568,12 +3556,13 @@ async function startServer() {
     }
     const tiff = await GeoTIFF.fromUrl(baseUrl + band + '.tif');
     const count = await tiff.getImageCount();
+    // Prefer smallest overview for fastest load
     let bestImg = await tiff.getImage(count - 1);
     for (let i = 0; i < count; i++) {
       const im = await tiff.getImage(i);
-      if (im.getWidth() === 687 || (im.getWidth() <= 700 && im.getWidth() >= 340)) {
+      // Prefer smallest overviews for fast preview
+      if (im.getWidth() < bestImg.getWidth()) {
         bestImg = im;
-        break;
       }
     }
     const rasters = await bestImg.readRasters();
@@ -4172,7 +4161,7 @@ async function startServer() {
             ]);
 
             const timeoutPromise = new Promise<never>((_, reject) =>
-              setTimeout(() => reject(new Error('Sentinel-2 COG band fetch timeout')), 9500)
+              setTimeout(() => reject(new Error('Sentinel-2 COG band fetch timeout')), 20000)
             );
 
             const [b3_b, b4_b, b8_b, b11_b, b3_a, b4_a, b8_a, b11_a] = await Promise.race([fetchPromise, timeoutPromise]);
