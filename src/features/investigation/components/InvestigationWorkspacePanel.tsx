@@ -569,11 +569,11 @@ export const InvestigationWorkspacePanel: React.FC<InvestigationWorkspacePanelPr
           </div>
         </div>
 
-        {/* If no candidate is currently selected, display candidate picker list */}
-        {!candidate ? (
-          <div className="space-y-3">
+        {/* COMPACT CANDIDATE LIST (always visible when candidates exist) */}
+        {candidatesList.length > 0 && (
+          <div className="space-y-2 mb-4 pb-4 border-b border-slate-200">
             <div className="flex items-center justify-between text-xs font-semibold text-slate-800">
-              <span>Detected Change Candidates ({candidatesList.length})</span>
+              <span>Detected Changes ({candidatesList.length})</span>
               <div className="flex items-center space-x-2">
                 <span className="text-[10px] text-slate-500 font-mono">Click to inspect</span>
                 <button
@@ -588,42 +588,77 @@ export const InvestigationWorkspacePanel: React.FC<InvestigationWorkspacePanelPr
               </div>
             </div>
 
-            {candidatesList.length > 0 ? (
-              <div className="space-y-1.5">
-                {candidatesList.map((cand, idx) => {
-                  const isNew = cand.type === 'new_construction_candidate';
-                  return (
-                    <button
-                      key={cand.id}
-                      type="button"
-                      onClick={() => onSelectCandidate && onSelectCandidate(cand.id)}
-                      className="w-full text-left p-2.5 rounded border border-slate-200 hover:border-teal-700 hover:bg-teal-50/50 transition-colors flex items-center justify-between group"
-                    >
-                      <div className="flex items-center space-x-2">
-                        <span className={`w-2.5 h-2.5 rounded-xs shrink-0 ${
-                          isNew ? 'bg-orange-500' : 'bg-purple-600'
-                        }`} />
-                        <div>
-                          <div className="text-xs font-semibold text-slate-900 group-hover:text-teal-950">
-                            {cand.id} &bull; {isNew ? 'Potential New Construction' : 'Expansion Candidate'}
-                          </div>
-                          <div className="text-[10px] font-mono text-slate-500">
-                            {cand.area_m2.toLocaleString()} m² &bull; &Delta;NDBI: +{cand.mean_delta_ndbi.toFixed(3)}
-                          </div>
+            <div className="space-y-1 max-h-48 overflow-y-auto">
+              {candidatesList.map((cand, idx) => {
+                const isNew = cand.type === 'new_construction_candidate';
+                const isSelected = cand.id === candidate?.id;
+                const persistenceStatus = cand.temporal_evidence?.status || (cand.persistence_status ? cand.persistence_status.toUpperCase() : 'PENDING');
+                const isTransient = persistenceStatus === 'TRANSIENT';
+
+                return (
+                  <button
+                    key={cand.id}
+                    type="button"
+                    onClick={() => onSelectCandidate && onSelectCandidate(cand.id)}
+                    className={`w-full text-left p-2 rounded border transition-colors flex items-center justify-between group ${
+                      isSelected
+                        ? 'border-teal-600 bg-teal-50 ring-1 ring-teal-600'
+                        : 'border-slate-200 hover:border-teal-700 hover:bg-teal-50/50'
+                    }`}
+                  >
+                    <div className="flex items-center space-x-2 min-w-0">
+                      <span className={`w-2 h-2 rounded-full shrink-0 ${
+                        isNew ? 'bg-orange-500' : 'bg-purple-600'
+                      }`} />
+                      <div className="min-w-0">
+                        <div className="text-xs font-semibold text-slate-900 group-hover:text-teal-950 truncate">
+                          {cand.id}
+                        </div>
+                        <div className="text-[9px] font-mono text-slate-500 flex items-center space-x-1.5">
+                          <span>{cand.area_m2.toLocaleString()} m²</span>
+                          <span className="text-slate-300">&bull;</span>
+                          <span className={`font-medium ${isTransient ? 'text-amber-600' : 'text-emerald-600'}`}>
+                            {persistenceStatus}
+                          </span>
+                          {cand.centroid && (
+                            <>
+                              <span className="text-slate-300">&bull;</span>
+                              <span className="truncate">{cand.centroid[1].toFixed(4)}°N, {cand.centroid[0].toFixed(4)}°E</span>
+                            </>
+                          )}
                         </div>
                       </div>
+                    </div>
+                    {isSelected ? (
+                      <CheckCircle2 className="w-3.5 h-3.5 text-teal-600 shrink-0" />
+                    ) : (
                       <ChevronRight className="w-3.5 h-3.5 text-slate-400 group-hover:text-teal-800 shrink-0" />
-                    </button>
-                  );
-                })}
-              </div>
-            ) : (
-              <div className="text-center py-8 text-xs text-slate-500 font-mono">
-                No candidates detected for current AOI threshold.
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+
+            {candidatesList.some(c => (c.temporal_evidence?.status || (c.persistence_status ? c.persistence_status.toUpperCase() : 'PENDING')) === 'TRANSIENT') && (
+              <div className="flex items-start space-x-2 px-2 py-1.5 bg-amber-50 border border-amber-200 rounded text-[10px] text-amber-800">
+                <Info className="w-3 h-3 text-amber-600 shrink-0 mt-0.5" />
+                <span className="font-mono">
+                  Some candidates are TRANSIENT: spectral changes may reflect seasonal vegetation cycles, not confirmed construction.
+                </span>
               </div>
             )}
           </div>
-        ) : (
+        )}
+
+        {/* If no candidate is currently selected, show empty state */}
+        {!candidate && candidatesList.length === 0 ? (
+          <div className="text-center py-8 text-xs text-slate-500 font-mono">
+            No candidates detected for current AOI threshold.
+          </div>
+        ) : null}
+
+        {/* CONNECTED EVIDENCE CHAIN (only when candidate is selected) */}
+        {candidate ? (
           /* CONNECTED EVIDENCE CHAIN (Section 4 & 5) */
           <div className="space-y-3">
             {/* EVIDENCE COORDINATE MOTIF (Section 11) */}
@@ -1057,7 +1092,7 @@ export const InvestigationWorkspacePanel: React.FC<InvestigationWorkspacePanelPr
               </span>
             </div>
           </div>
-        )}
+        ) : null}
       </div>
     </div>
   );
