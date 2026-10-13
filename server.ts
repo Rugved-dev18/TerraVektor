@@ -248,13 +248,15 @@ async function fetchNominatim(query: string, limit = 8): Promise<NominatimFetchO
       headers: {
         'Accept': 'application/json',
         'Accept-Language': 'en',
-        'User-Agent': 'TerraVektor/1.0 (Geospatial Investigation Platform)'
+        'User-Agent': 'TerraVektor/1.0 (Geospatial Investigation Platform - geospatial@terracorp.com)'
       },
       signal: AbortSignal.timeout(8000)
     });
 
     if (res.status === 429) {
-      console.warn(`[LocationResolver] query=${query} status=429 resultCount=0`);
+      const retryAfter = res.headers.get('Retry-After');
+      const waitSeconds = retryAfter ? parseInt(retryAfter, 10) : 5;
+      console.warn(`[LocationResolver] query=${query} status=429 resultCount=0 retryAfter=${waitSeconds}s`);
       return {
         status: 429,
         data: [],
@@ -458,7 +460,40 @@ async function resolveGeographicLocation(query: string): Promise<any> {
     }
   }
 
-  // 5. Parse & Validate candidates
+  // 5. Fallback to AOI presets if geocoding fails and location matches a preset
+  if (rawResults.length === 0 && !upstreamErrorType) {
+    const lowerCleaned = cleaned.toLowerCase();
+    if (AOI_PRESETS[lowerCleaned]) {
+      const presetBbox = AOI_PRESETS[lowerCleaned];
+      const centerLat = (presetBbox[1] + presetBbox[3]) / 2;
+      const centerLon = (presetBbox[0] + presetBbox[2]) / 2;
+      rawResults = [{
+        place_id: 0,
+        licence: '© OpenStreetMap contributors',
+        osm_type: 'relation',
+        osm_id: 0,
+        lat: centerLat.toString(),
+        lon: centerLon.toString(),
+        category: 'boundary',
+        type: 'administrative',
+        place_rank: 16,
+        importance: 0.9,
+        addresstype: 'city',
+        name: cleaned.charAt(0).toUpperCase() + cleaned.slice(1),
+        display_name: `${cleaned.charAt(0).toUpperCase() + cleaned.slice(1)}, India (AOI Preset)`,
+        address: { country: 'India', state: 'Maharashtra' },
+        boundingbox: [
+          presetBbox[1].toString(),
+          presetBbox[0].toString(),
+          presetBbox[3].toString(),
+          presetBbox[2].toString()
+        ]
+      }];
+      console.log(`[LocationResolver] Using AOI preset for: ${cleaned}`);
+    }
+  }
+
+  // 6. Parse & Validate candidates
   const parsedCandidates: any[] = [];
   for (const raw of rawResults) {
     const loc = parseNominatimItem(raw);
@@ -468,7 +503,7 @@ async function resolveGeographicLocation(query: string): Promise<any> {
   }
 
   if (parsedCandidates.length === 0) {
-    const message = upstreamError || `Location "${trimmed}" could not be resolved. Try adding a state or country.`;
+    const message = upstreamError || `Location "${trimmed}" could not be resolved. Try adding a state or country, or select a preset location.`;
     const unresolvedResponse = {
       status: 'unresolved',
       resolved: false,
@@ -2550,7 +2585,8 @@ async function startServer() {
     'bengaluru': [77.45, 12.85, 77.75, 13.10],
     'delhi': [76.90, 28.45, 77.35, 28.85],
     'chennai': [80.10, 12.90, 80.35, 13.20],
-    'jaipur': [75.65, 26.80, 75.95, 27.05]
+    'jaipur': [75.65, 26.80, 75.95, 27.05],
+    'nashik': [73.63, 19.85, 73.95, 20.17]
   };
 
   // Expanded location name normalization with variations
@@ -2565,6 +2601,7 @@ async function startServer() {
     'new delhi': 'delhi',
     'chennai': 'chennai',
     'madras': 'chennai',
+    'nashik': 'nashik',
     'jaipur': 'jaipur'
   };
 

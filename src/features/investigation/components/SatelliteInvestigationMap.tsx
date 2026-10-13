@@ -212,13 +212,59 @@ export const SatelliteInvestigationMap: React.FC<SatelliteInvestigationMapProps>
   const [afterError, setAfterError] = useState<boolean>(false);
   const [afterUnavailable, setAfterUnavailable] = useState<boolean>(false);
 
+  // Spiderfy cluster state for overlapping markers
+  const [expandedClusterId, setExpandedClusterId] = useState<string | null>(null);
+
   // Extract candidate regions if built-up analysis
-  const builtUpAnalysis = analysis && 'classification' in analysis && analysis.classification === 'built_up_change' 
-    ? (analysis as BuiltUpAnalysisResult) 
+  const builtUpAnalysis = analysis && 'classification' in analysis && analysis.classification === 'built_up_change'
+    ? (analysis as BuiltUpAnalysisResult)
     : null;
-  
+
   const candidateList: CandidateRegion[] = builtUpAnalysis?.candidates || [];
   const selectedCandidate = candidateList.find(c => c.id === selectedCandidateId) || null;
+
+  // Group candidates by proximity for spiderfy clustering (within 0.0005 degrees ~ 55m)
+  const candidateClusters = React.useMemo(() => {
+    const clusters: Array<{ candidates: CandidateRegion[]; centroid: [number, number] }> = [];
+    const used = new Set<string>();
+
+    for (const cand of candidateList) {
+      if (used.has(cand.id)) continue;
+
+      const cluster: CandidateRegion[] = [cand];
+      used.add(cand.id);
+
+      // Find nearby candidates
+      for (const other of candidateList) {
+        if (used.has(other.id)) continue;
+        if (!cand.centroid || !other.centroid) continue;
+
+        const dist = Math.sqrt(
+          Math.pow(cand.centroid[0] - other.centroid[0], 2) +
+          Math.pow(cand.centroid[1] - other.centroid[1], 2)
+        );
+
+        if (dist < 0.0005) { // ~55 meters
+          cluster.push(other);
+          used.add(other.id);
+        }
+      }
+
+      // Calculate cluster centroid
+      const clusterCentroid: [number, number] = cluster.reduce(
+        (acc, c) => c.centroid ? [acc[0] + c.centroid[0], acc[1] + c.centroid[1]] : acc,
+        [0, 0]
+      );
+      const centroid: [number, number] = [
+        clusterCentroid[0] / cluster.length,
+        clusterCentroid[1] / cluster.length
+      ];
+
+      clusters.push({ candidates: cluster, centroid });
+    }
+
+    return clusters;
+  }, [candidateList]);
 
   // Initialize Map and Leaflet Panes
   useEffect(() => {
@@ -269,6 +315,11 @@ export const SatelliteInvestigationMap: React.FC<SatelliteInvestigationMapProps>
       .addTo(map);
 
     mapRef.current = map;
+
+    // Click on map background to collapse expanded clusters
+    map.on('click', () => {
+      setExpandedClusterId(null);
+    });
 
     // Attach ResizeObserver to container to call invalidateSize() when dimensions change (Section 12)
     const resizeObserver = new ResizeObserver(() => {
@@ -461,146 +512,205 @@ export const SatelliteInvestigationMap: React.FC<SatelliteInvestigationMapProps>
     candidateLayersRef.current.forEach(layer => map.removeLayer(layer));
     candidateLayersRef.current.clear();
 
-    if (!showCandidates || candidateList.length === 0) return;
+    if (!showCandidates || candidateClusters.length === 0) return;
 
-    candidateList.forEach(cand => {
-      const isSelected = cand.id === selectedCandidateId;
-      const isPossibleConstruction = cand.type === 'possible_construction_candidate';
-      const isBuiltUp = cand.type === 'built_up_change_candidate';
-      
-      const strokeColor = isSelected ? '#facc15' : isPossibleConstruction ? '#f97316' : isBuiltUp ? '#a855f7' : '#0284c7';
-      const fillColor = isPossibleConstruction ? '#ea580c' : isBuiltUp ? '#9333ea' : '#0369a1';
+    candidateClusters.forEach((cluster, clusterIdx) => {
+      const isClusterExpanded = expandedClusterId === `cluster_${clusterIdx}`;
+      const clusterHasMultiple = cluster.candidates.length > 1;
 
-      // Scientific nomenclature: Sentinel-2 10m surface-change footprints, not confirmed buildings
-      const typeLabel = isPossibleConstruction 
-        ? 'Potential New Construction' 
-        : isBuiltUp 
-        ? 'Detected Change Footprint' 
-        : (cand.display_name || 'Detected Spectral Change');
-      const iconSymbol = isPossibleConstruction ? '🟧' : isBuiltUp ? '🟪' : '🟦';
+      cluster.candidates.forEach((cand, idx) => {
+        const isSelected = cand.id === selectedCandidateId;
+        const isPossibleConstruction = cand.type === 'possible_construction_candidate';
+        const isBuiltUp = cand.type === 'built_up_change_candidate';
 
-      const candidateGroup = L.featureGroup();
+        const strokeColor = isSelected ? '#facc15' : isPossibleConstruction ? '#f97316' : isBuiltUp ? '#a855f7' : '#0284c7';
+        const fillColor = isPossibleConstruction ? '#ea580c' : isBuiltUp ? '#9333ea' : '#0369a1';
 
-      // 1. Convert each connected candidate pixel component into a geographic polygon/GeoJSON Polygon or MultiPolygon
-      // and render the resulting polygon geometry on Leaflet instead of drawing individual 10m pixel rectangles.
-      let hasGeometry = false;
-      let polygonLatLngs: [number, number][][] | [number, number][][][] | null = null;
+        // Scientific nomenclature: Sentinel-2 10m surface-change footprints, not confirmed buildings
+        const typeLabel = isPossibleConstruction
+          ? 'Potential New Construction'
+          : isBuiltUp
+          ? 'Detected Change Footprint'
+          : (cand.display_name || 'Detected Spectral Change');
+        const iconSymbol = isPossibleConstruction ? '🟧' : isBuiltUp ? '🟪' : '🟦';
 
-      if (cand.geometry && cand.geometry.coordinates) {
-        if (cand.geometry.type === 'Polygon' && Array.isArray(cand.geometry.coordinates[0]) && cand.geometry.coordinates[0].length >= 3) {
-          polygonLatLngs = (cand.geometry.coordinates as number[][][]).map(ring =>
-            ring.map(pt => [pt[1], pt[0]] as [number, number])
-          );
-        } else if (cand.geometry.type === 'MultiPolygon' && Array.isArray(cand.geometry.coordinates)) {
-          polygonLatLngs = (cand.geometry.coordinates as number[][][][]).map(poly =>
-            poly.map(ring => ring.map(pt => [pt[1], pt[0]] as [number, number]))
-          );
+        const candidateGroup = L.featureGroup();
+
+        // Calculate spiderfy offset if cluster is expanded
+        let displayCentroid = cand.centroid;
+        if (isClusterExpanded && clusterHasMultiple && cand.centroid) {
+          const angle = (idx / cluster.candidates.length) * 2 * Math.PI;
+          const offset = 0.0003; // ~33 meters spiderfy radius
+          displayCentroid = [
+            cand.centroid[0] + offset * Math.cos(angle),
+            cand.centroid[1] + offset * Math.sin(angle)
+          ];
         }
-      }
 
-      // If geometry was not provided or empty, convert the connected pixel component into a geographic polygon
-      const pixelCoords = cand.pixel_coordinates || (cand as any).pixelCoords;
-      if (!polygonLatLngs && Array.isArray(pixelCoords) && pixelCoords.length > 0) {
-        const tracedRings = traceCandidatePixelFootprint(pixelCoords);
-        if (tracedRings && tracedRings.length > 0) {
-          polygonLatLngs = tracedRings;
+        // 1. Convert each connected candidate pixel component into a geographic polygon/GeoJSON Polygon or MultiPolygon
+        // and render the resulting polygon geometry on Leaflet instead of drawing individual 10m pixel rectangles.
+        let hasGeometry = false;
+        let polygonLatLngs: [number, number][][] | [number, number][][][] | null = null;
+
+        if (cand.geometry && cand.geometry.coordinates) {
+          if (cand.geometry.type === 'Polygon' && Array.isArray(cand.geometry.coordinates[0]) && cand.geometry.coordinates[0].length >= 3) {
+            polygonLatLngs = (cand.geometry.coordinates as number[][][]).map(ring =>
+              ring.map(pt => [pt[1], pt[0]] as [number, number])
+            );
+          } else if (cand.geometry.type === 'MultiPolygon' && Array.isArray(cand.geometry.coordinates)) {
+            polygonLatLngs = (cand.geometry.coordinates as number[][][][]).map(poly =>
+              poly.map(ring => ring.map(pt => [pt[1], pt[0]] as [number, number]))
+            );
+          }
         }
-      }
 
-      if (polygonLatLngs && polygonLatLngs.length > 0) {
-        const poly = L.polygon(polygonLatLngs as any, {
-          color: strokeColor,
-          weight: isSelected ? 2.5 : 1.75,
-          dashArray: undefined,
-          fillColor: fillColor,
-          fillOpacity: isSelected ? 0.40 : 0.25,
-          className: isSelected ? 'candidate-selected-pulsing cursor-pointer' : 'candidate-vector cursor-pointer',
-          interactive: true
+        // If geometry was not provided or empty, convert the connected pixel component into a geographic polygon
+        const pixelCoords = cand.pixel_coordinates || (cand as any).pixelCoords;
+        if (!polygonLatLngs && Array.isArray(pixelCoords) && pixelCoords.length > 0) {
+          const tracedRings = traceCandidatePixelFootprint(pixelCoords);
+          if (tracedRings && tracedRings.length > 0) {
+            polygonLatLngs = tracedRings;
+          }
+        }
+
+        if (polygonLatLngs && polygonLatLngs.length > 0) {
+          const poly = L.polygon(polygonLatLngs as any, {
+            color: strokeColor,
+            weight: isSelected ? 2.5 : 1.75,
+            dashArray: undefined,
+            fillColor: fillColor,
+            fillOpacity: isSelected ? 0.40 : 0.25,
+            className: isSelected ? 'candidate-selected-pulsing cursor-pointer' : 'candidate-vector cursor-pointer',
+            interactive: true
+          });
+          poly.on('click', (e) => {
+            L.DomEvent.stopPropagation(e);
+            if (onSelectCandidate) {
+              onSelectCandidate(cand.id);
+            }
+          });
+          candidateGroup.addLayer(poly);
+          hasGeometry = true;
+        } else if (cand.centroid) {
+          // Fallback: If no polygon or pixels available, create a tight 10m cell from centroid (never the large bbox!)
+          const halfPixelDeg = 0.000045;
+          const cellBounds = L.latLngBounds(
+            [cand.centroid[1] - halfPixelDeg, cand.centroid[0] - halfPixelDeg],
+            [cand.centroid[1] + halfPixelDeg, cand.centroid[0] + halfPixelDeg]
+          );
+          const cell = L.rectangle(cellBounds, {
+            color: strokeColor,
+            weight: isSelected ? 2.5 : 1.5,
+            fillColor: fillColor,
+            fillOpacity: isSelected ? 0.35 : 0.15,
+            className: isSelected ? 'candidate-selected-pulsing cursor-pointer' : 'candidate-vector cursor-pointer',
+            interactive: true
+          });
+          cell.on('click', (e) => {
+            L.DomEvent.stopPropagation(e);
+            if (onSelectCandidate) {
+              onSelectCandidate(cand.id);
+            }
+          });
+          candidateGroup.addLayer(cell);
+          hasGeometry = true;
+        }
+
+        // 3. Candidate Label / Tooltip with exact coordinates
+        const coordsText = cand.centroid
+          ? `${cand.centroid[1].toFixed(4)}°N, ${cand.centroid[0].toFixed(4)}°E`
+          : 'Coordinates unavailable';
+
+        const tooltipHtml = `
+          <div class="p-1 font-sans text-xs">
+            <div class="font-bold flex items-center gap-1.5" style="color: ${strokeColor};">
+              <span>${iconSymbol}</span>
+              <span>${cand.id} &bull; ${typeLabel}</span>
+            </div>
+            <div class="text-[11px] text-slate-700 mt-1 font-mono">
+              Footprint: <strong class="text-slate-900">${cand.area_m2.toLocaleString()} m²</strong> (${(cand.area_m2 / 10000).toFixed(2)} ha)
+            </div>
+            <div class="text-[10px] text-slate-600 font-mono mt-0.5">
+              Location: <strong class="text-slate-900">${coordsText}</strong>
+            </div>
+            <div class="text-[10px] text-slate-500 font-mono mt-0.5">
+              Support: <strong class="text-slate-900">${cand.pixel_count}</strong> contiguous 10m Sentinel-2 pixels
+            </div>
+            <div class="text-[10px] text-slate-500 font-mono mt-0.5">
+              &Delta;NDVI: ${cand.mean_delta_ndvi?.toFixed(3) ?? cand.delta_ndvi?.toFixed(3)} | &Delta;NDBI: +${cand.mean_delta_ndbi?.toFixed(3) ?? cand.delta_ndbi?.toFixed(3)}
+            </div>
+            <div class="text-[10px] text-teal-800 font-semibold mt-1 font-sans">
+              Click to load in Evidence Spine &rarr;
+            </div>
+          </div>
+        `;
+
+        candidateGroup.bindTooltip(tooltipHtml, {
+          sticky: true,
+          direction: 'top',
+          className: 'candidate-custom-tooltip'
         });
-        poly.on('click', (e) => {
-          L.DomEvent.stopPropagation(e);
+
+        // Floating badge on selected candidate
+        if (isSelected && displayCentroid) {
+          const badgeIcon = L.divIcon({
+            className: 'candidate-active-badge-marker',
+            html: `<div style="background: rgba(15,23,42,0.92); color: #facc15; border: 1px solid #facc15; font-family: monospace; font-size: 10px; font-weight: bold; padding: 2px 6px; border-radius: 4px; white-space: nowrap; box-shadow: 0 2px 4px rgba(0,0,0,0.4); transform: translate(-50%, -100%); margin-top: -8px;">
+              <span>${cand.id}: ${typeLabel} (${cand.pixel_count} px &bull; ${(cand.area_m2 / 10000).toFixed(2)} ha)</span>
+            </div>`,
+            iconSize: [0, 0]
+          });
+          const marker = L.marker([displayCentroid[1], displayCentroid[0]], { icon: badgeIcon, interactive: false });
+          candidateGroup.addLayer(marker);
+        }
+
+        candidateGroup.on('click', () => {
           if (onSelectCandidate) {
             onSelectCandidate(cand.id);
           }
         });
-        candidateGroup.addLayer(poly);
-        hasGeometry = true;
-      } else if (cand.centroid) {
-        // Fallback: If no polygon or pixels available, create a tight 10m cell from centroid (never the large bbox!)
-        const halfPixelDeg = 0.000045;
-        const cellBounds = L.latLngBounds(
-          [cand.centroid[1] - halfPixelDeg, cand.centroid[0] - halfPixelDeg],
-          [cand.centroid[1] + halfPixelDeg, cand.centroid[0] + halfPixelDeg]
-        );
-        const cell = L.rectangle(cellBounds, {
-          color: strokeColor,
-          weight: isSelected ? 2.5 : 1.5,
-          fillColor: fillColor,
-          fillOpacity: isSelected ? 0.35 : 0.15,
-          className: isSelected ? 'candidate-selected-pulsing cursor-pointer' : 'candidate-vector cursor-pointer',
-          interactive: true
-        });
-        cell.on('click', (e) => {
-          L.DomEvent.stopPropagation(e);
-          if (onSelectCandidate) {
-            onSelectCandidate(cand.id);
-          }
-        });
-        candidateGroup.addLayer(cell);
-        hasGeometry = true;
-      }
 
-      // 3. Candidate Label / Tooltip
-      const tooltipHtml = `
-        <div class="p-1 font-sans text-xs">
-          <div class="font-bold flex items-center gap-1.5" style="color: ${strokeColor};">
-            <span>${iconSymbol}</span>
-            <span>${cand.id} &bull; ${typeLabel}</span>
-          </div>
-          <div class="text-[11px] text-slate-700 mt-1 font-mono">
-            Footprint: <strong class="text-slate-900">${cand.area_m2.toLocaleString()} m²</strong> (${(cand.area_m2 / 10000).toFixed(2)} ha)
-          </div>
-          <div class="text-[10px] text-slate-600 font-mono mt-0.5">
-            Support: <strong class="text-slate-900">${cand.pixel_count}</strong> contiguous 10m Sentinel-2 pixels
-          </div>
-          <div class="text-[10px] text-slate-500 font-mono mt-0.5">
-            &Delta;NDVI: ${cand.mean_delta_ndvi?.toFixed(3) ?? cand.delta_ndvi?.toFixed(3)} | &Delta;NDBI: +${cand.mean_delta_ndbi?.toFixed(3) ?? cand.delta_ndbi?.toFixed(3)}
-          </div>
-          <div class="text-[10px] text-teal-800 font-semibold mt-1 font-sans">
-            Click to load in Evidence Spine &rarr;
-          </div>
-        </div>
-      `;
-
-      candidateGroup.bindTooltip(tooltipHtml, {
-        sticky: true,
-        direction: 'top',
-        className: 'candidate-custom-tooltip'
+        candidateGroup.addTo(map);
+        candidateLayersRef.current.set(cand.id, candidateGroup);
       });
 
-      // Floating badge on selected candidate
-      if (isSelected && cand.centroid) {
-        const badgeIcon = L.divIcon({
-          className: 'candidate-active-badge-marker',
-          html: `<div style="background: rgba(15,23,42,0.92); color: #facc15; border: 1px solid #facc15; font-family: monospace; font-size: 10px; font-weight: bold; padding: 2px 6px; border-radius: 4px; white-space: nowrap; box-shadow: 0 2px 4px rgba(0,0,0,0.4); transform: translate(-50%, -100%); margin-top: -8px;">
-            <span>${cand.id}: ${typeLabel} (${cand.pixel_count} px &bull; ${(cand.area_m2 / 10000).toFixed(2)} ha)</span>
+      // Add cluster center marker for multi-candidate clusters
+      if (clusterHasMultiple && !isClusterExpanded && cluster.centroid) {
+        const clusterIcon = L.divIcon({
+          className: 'candidate-cluster-marker',
+          html: `<div style="background: rgba(15,23,42,0.95); color: #facc15; border: 2px solid #facc15; font-family: monospace; font-size: 11px; font-weight: bold; padding: 4px 8px; border-radius: 50%; width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; box-shadow: 0 2px 8px rgba(0,0,0,0.5); cursor: pointer;">
+            ${cluster.candidates.length}
           </div>`,
-          iconSize: [0, 0]
+          iconSize: [32, 32],
+          iconAnchor: [16, 16]
         });
-        const marker = L.marker([cand.centroid[1], cand.centroid[0]], { icon: badgeIcon, interactive: false });
-        candidateGroup.addLayer(marker);
+
+        const clusterMarker = L.marker([cluster.centroid[1], cluster.centroid[0]], { icon: clusterIcon });
+        clusterMarker.on('click', (e) => {
+          L.DomEvent.stopPropagation(e);
+          setExpandedClusterId(`cluster_${clusterIdx}`);
+        });
+
+        const clusterTooltip = L.tooltip({
+          direction: 'top',
+          className: 'candidate-custom-tooltip'
+        }).setContent(`
+          <div class="p-1 font-sans text-xs">
+            <div class="font-bold text-slate-900">
+              ${cluster.candidates.length} overlapping candidates
+            </div>
+            <div class="text-[10px] text-slate-600 mt-1">
+              Click to expand and view individually
+            </div>
+          </div>
+        `);
+
+        clusterMarker.bindTooltip(clusterTooltip);
+        clusterMarker.addTo(map);
+        candidateLayersRef.current.set(`cluster_${clusterIdx}`, clusterMarker);
       }
-
-      candidateGroup.on('click', () => {
-        if (onSelectCandidate) {
-          onSelectCandidate(cand.id);
-        }
-      });
-
-      candidateGroup.addTo(map);
-      candidateLayersRef.current.set(cand.id, candidateGroup);
     });
-  }, [candidateList, selectedCandidateId, showCandidates, onSelectCandidate]);
+  }, [candidateClusters, selectedCandidateId, showCandidates, onSelectCandidate, expandedClusterId]);
 
   // Zoom to candidate actual geometry when selection changes (Section 7)
   useEffect(() => {

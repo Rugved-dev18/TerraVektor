@@ -61,16 +61,13 @@ export const SemanticSearch: React.FC = () => {
     setHasSearched(true);
     setErrorMessage(null);
     setSelectedCandidateId(null);
-    
-    // Parse query locally for immediate feedback
+
+    // Parse query locally for immediate feedback (no geocoding)
     const localPlan = parseQuery(searchQuery);
     setQueryPlan(localPlan);
 
-    // Asynchronously resolve geographic location for immediate status
-    parseQueryAsync(searchQuery).then(resolvedPlan => {
-      setQueryPlan(resolvedPlan);
-    });
-    
+    // Removed duplicate frontend geocoding - backend handles it to avoid rate limiting
+
     try {
       const response = await semanticRetrieval({
         query: searchQuery
@@ -79,7 +76,7 @@ export const SemanticSearch: React.FC = () => {
       setSelectedBeforeScene(response.beforeScene);
       setSelectedAfterScene(response.afterScene);
       setActiveAnalysis(response.analysis);
-      
+
       if (response.parsedQuery) {
         // Sync local queryPlan with the authoritative backend parsed query
         setQueryPlan(prev => ({

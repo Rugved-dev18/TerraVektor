@@ -199,7 +199,8 @@ export const LOCATION_ALIASES: Record<string, string> = {
   'new delhi': 'delhi',
   'chennai': 'chennai',
   'madras': 'chennai',
-  'jaipur': 'jaipur'
+  'jaipur': 'jaipur',
+  'nashik': 'nashik'
 };
 
 // AOI presets for Indian cities (from server.ts)
@@ -209,7 +210,8 @@ export const AOI_PRESETS: Record<string, [number, number, number, number]> = {
   'bengaluru': [77.45, 12.85, 77.75, 13.10],
   'delhi': [76.90, 28.45, 77.35, 28.85],
   'chennai': [80.10, 12.90, 80.35, 13.20],
-  'jaipur': [75.65, 26.80, 75.95, 27.05]
+  'jaipur': [75.65, 26.80, 75.95, 27.05],
+  'nashik': [73.63, 19.85, 73.95, 20.17]
 };
 
 // Month names for parsing
