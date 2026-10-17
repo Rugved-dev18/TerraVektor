@@ -15,7 +15,8 @@ import {
   ExternalLink,
   CheckCircle2,
   XCircle,
-  FileDown
+  FileDown,
+  Sparkles
 } from 'lucide-react';
 import { searchSentinel2, analyzeSentinel2Change, getSentinel2PreviewUrl, getChangeMaskUrl } from '../services/api';
 import { Sentinel2Product, Sentinel2SearchResponse, ChangeAnalysisResult } from '../types';
@@ -23,7 +24,11 @@ import { SatelliteInvestigationMap } from '../features/investigation/components/
 import { exportAnalysisPdf } from '../utils/exportAnalysisPdf';
 import { format, subDays } from 'date-fns';
 
-export const ChangeAnalysis: React.FC = () => {
+interface ChangeAnalysisProps {
+  onOpenEvidenceStudio?: () => void;
+}
+
+export const ChangeAnalysis: React.FC<ChangeAnalysisProps> = ({ onOpenEvidenceStudio }) => {
   const [availableProducts, setAvailableProducts] = useState<Sentinel2Product[]>([]);
   const [beforeProductId, setBeforeProductId] = useState<string | null>(null);
   const [afterProductId, setAfterProductId] = useState<string | null>(null);
@@ -436,6 +441,17 @@ export const ChangeAnalysis: React.FC = () => {
               Change Detection Results
             </h2>
             <div className="flex items-center space-x-2">
+              {onOpenEvidenceStudio && (
+                <button
+                  type="button"
+                  onClick={onOpenEvidenceStudio}
+                  className="px-3 py-1.5 bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-300 text-xs font-semibold rounded shadow-2xs transition-colors flex items-center space-x-1.5 cursor-pointer"
+                  title="Open in Evidence Visualization Studio for annotation & image export"
+                >
+                  <Sparkles className="w-3.5 h-3.5 text-amber-700" />
+                  <span>Open in Evidence Studio</span>
+                </button>
+              )}
               <button
                 type="button"
                 onClick={handleExportPdf}

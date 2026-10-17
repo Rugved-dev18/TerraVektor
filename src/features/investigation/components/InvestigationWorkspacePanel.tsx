@@ -44,6 +44,7 @@ interface InvestigationWorkspacePanelProps {
   temporalScenes?: TemporalScene[];
   onSelectCandidate?: (id: string | null) => void;
   onClose?: () => void;
+  onOpenEvidenceStudio?: () => void;
   dataMode?: string;
   limitations?: string[];
   source?: string;
@@ -57,6 +58,7 @@ export const InvestigationWorkspacePanel: React.FC<InvestigationWorkspacePanelPr
   temporalScenes = [],
   onSelectCandidate,
   onClose,
+  onOpenEvidenceStudio,
   dataMode,
   limitations,
   source
@@ -487,6 +489,18 @@ export const InvestigationWorkspacePanel: React.FC<InvestigationWorkspacePanelPr
             </button>
           )}
 
+          {onOpenEvidenceStudio && (
+            <button
+              type="button"
+              onClick={onOpenEvidenceStudio}
+              className="flex items-center space-x-1.5 px-2.5 py-1 text-[11px] font-mono font-bold rounded border border-amber-300 bg-amber-50 hover:bg-amber-100 text-amber-900 transition-colors shadow-2xs cursor-pointer"
+              title="Open Evidence Visualization Studio for forensic annotation & image export"
+            >
+              <Sparkles className="w-3.5 h-3.5 text-amber-700" />
+              <span>Evidence Studio</span>
+            </button>
+          )}
+
           <button
             type="button"
             onClick={handleExportCsv}
@@ -498,7 +512,7 @@ export const InvestigationWorkspacePanel: React.FC<InvestigationWorkspacePanelPr
             title="Download temporal evidence sequence and candidate details as CSV"
           >
             <Download className="w-3.5 h-3.5 text-teal-800" />
-            <span>{exportSuccess ? 'Downloaded CSV' : 'Export Results to CSV'}</span>
+            <span>{exportSuccess ? 'Downloaded CSV' : 'Export CSV'}</span>
           </button>
         </div>
       </div>

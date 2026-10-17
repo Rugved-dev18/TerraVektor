@@ -17,7 +17,8 @@ import {
   Minus,
   RotateCcw,
   Loader2,
-  AlertTriangle
+  AlertTriangle,
+  MapPin
 } from 'lucide-react';
 import { format } from 'date-fns';
 import { BuiltUpAnalysisResult, ChangeAnalysisResult, CandidateRegion } from '../../../types';
@@ -26,6 +27,7 @@ import { polygon as turfPolygon } from '@turf/helpers';
 import { MapColorMode, MAP_COLOR_MODES } from '../../../types/mapModes';
 import { MapColorFilters, getMapColorFilterStyle } from '../../../components/MapColorFilters';
 import { MapColorModeSelector } from '../../../components/MapColorModeSelector';
+import { GoogleMapsContextView } from './GoogleMapsContextView';
 
 export interface SceneSummary {
   id: string;
@@ -171,6 +173,126 @@ interface SatelliteInvestigationMapProps {
   onSelectCandidate?: (candidateId: string | null) => void;
 }
 
+// Safe bounds and fly animation helpers that prevent Leaflet (NaN, NaN) crash when containers resize or coordinates are unprojected
+function safeFitBounds(
+  map: L.Map | null | undefined,
+  bounds: L.LatLngBounds | [[number, number], [number, number]],
+  options?: L.FitBoundsOptions
+) {
+  if (!map) return;
+  try {
+    const b = bounds instanceof L.LatLngBounds ? bounds : L.latLngBounds(bounds[0], bounds[1]);
+    if (!b.isValid()) return;
+    const sw = b.getSouthWest();
+    const ne = b.getNorthEast();
+    if (isNaN(sw.lat) || isNaN(sw.lng) || isNaN(ne.lat) || isNaN(ne.lng)) return;
+
+    map.invalidateSize();
+    const size = map.getSize();
+    if (!size || size.x <= 10 || size.y <= 10) {
+      const center = b.getCenter();
+      if (!isNaN(center.lat) && !isNaN(center.lng)) {
+        map.setView(center, 12, { animate: false });
+      }
+      return;
+    }
+
+    map.fitBounds(b, { ...options, animate: false });
+  } catch (err) {
+    console.warn('safeFitBounds fallback:', err);
+  }
+}
+
+function safeFlyToBounds(
+  map: L.Map | null | undefined,
+  bounds: L.LatLngBounds | [[number, number], [number, number]],
+  options?: L.FitBoundsOptions & { maxZoom?: number; duration?: number }
+) {
+  if (!map) return;
+  try {
+    const b = bounds instanceof L.LatLngBounds ? bounds : L.latLngBounds(bounds[0], bounds[1]);
+    if (!b.isValid()) return;
+    const sw = b.getSouthWest();
+    const ne = b.getNorthEast();
+    if (isNaN(sw.lat) || isNaN(sw.lng) || isNaN(ne.lat) || isNaN(ne.lng)) return;
+
+    map.invalidateSize();
+    const size = map.getSize();
+    if (!size || size.x <= 10 || size.y <= 10) {
+      const center = b.getCenter();
+      if (!isNaN(center.lat) && !isNaN(center.lng)) {
+        map.setView(center, options?.maxZoom || 13, { animate: false });
+      }
+      return;
+    }
+
+    const latSpan = Math.abs(ne.lat - sw.lat);
+    const lngSpan = Math.abs(ne.lng - sw.lng);
+    // If span is zero or essentially a point, flyTo the center directly instead of flyToBounds
+    if (latSpan < 0.0002 && lngSpan < 0.0002) {
+      const center = b.getCenter();
+      if (!isNaN(center.lat) && !isNaN(center.lng)) {
+        map.flyTo(center, Math.min(options?.maxZoom || 16, 17), {
+          duration: options?.duration || 0.8
+        });
+      }
+      return;
+    }
+
+    map.flyToBounds(b, {
+      padding: options?.padding || [30, 30],
+      maxZoom: options?.maxZoom || 18,
+      duration: options?.duration || 0.8
+    });
+  } catch (err) {
+    console.warn('safeFlyToBounds fallback:', err);
+    try {
+      const b = bounds instanceof L.LatLngBounds ? bounds : L.latLngBounds(bounds[0], bounds[1]);
+      if (b.isValid()) {
+        map.fitBounds(b, { animate: false });
+      }
+    } catch {
+      // ignore
+    }
+  }
+}
+
+function safeFlyTo(
+  map: L.Map | null | undefined,
+  latlng: [number, number] | L.LatLng,
+  zoom?: number,
+  options?: L.ZoomPanOptions & { duration?: number }
+) {
+  if (!map) return;
+  try {
+    const lat = Array.isArray(latlng) ? latlng[0] : latlng.lat;
+    const lng = Array.isArray(latlng) ? latlng[1] : latlng.lng;
+    if (isNaN(lat) || isNaN(lng)) return;
+
+    map.invalidateSize();
+    const size = map.getSize();
+    if (!size || size.x <= 10 || size.y <= 10) {
+      map.setView([lat, lng], zoom || 13, { animate: false });
+      return;
+    }
+
+    map.flyTo([lat, lng], zoom || 15, {
+      duration: options?.duration || 0.8
+    });
+  } catch (err) {
+    console.warn('safeFlyTo fallback:', err);
+    try {
+      const lat = Array.isArray(latlng) ? latlng[0] : latlng.lat;
+      const lng = Array.isArray(latlng) ? latlng[1] : latlng.lng;
+      if (!isNaN(lat) && !isNaN(lng)) {
+        map.setView([lat, lng], zoom || 13, { animate: false });
+      }
+    } catch {
+      // ignore
+    }
+  }
+}
+
 export const SatelliteInvestigationMap: React.FC<SatelliteInvestigationMapProps> = ({
   beforeScene,
   afterScene,
@@ -204,6 +326,22 @@ export const SatelliteInvestigationMap: React.FC<SatelliteInvestigationMapProps>
   const [showCandidates, setShowCandidates] = useState<boolean>(true);
   const [showAoiBoundary, setShowAoiBoundary] = useState<boolean>(true);
   const [activeBaseLayer, setActiveBaseLayer] = useState<'satellite' | 'osm'>('satellite');
+
+  // Ensure safe fallback for aoiBbox
+  const safeBbox: [number, number, number, number] = React.useMemo(() => {
+    if (Array.isArray(aoiBbox) && aoiBbox.length === 4 && aoiBbox.every(n => typeof n === 'number' && !isNaN(n))) {
+      return aoiBbox;
+    }
+    return [73.70, 18.40, 74.05, 18.70];
+  }, [aoiBbox]);
+
+  // Geographic Context Layer: View mode (Analytical Leaflet, Dual Synchronized View, or Google Maps Context)
+  const [investigationViewMode, setInvestigationViewMode] = useState<'analytical' | 'dual' | 'google_context'>('analytical');
+  const [syncedCenter, setSyncedCenter] = useState<{ lat: number; lng: number }>(() => ({
+    lat: (safeBbox[1] + safeBbox[3]) / 2,
+    lng: (safeBbox[0] + safeBbox[2]) / 2
+  }));
+  const [syncedZoom, setSyncedZoom] = useState<number>(12);
 
   // Loading and error states for real Sentinel-2 imagery
   const [isBeforeLoading, setIsBeforeLoading] = useState<boolean>(true);
@@ -270,12 +408,15 @@ export const SatelliteInvestigationMap: React.FC<SatelliteInvestigationMapProps>
   useEffect(() => {
     if (!mapContainerRef.current || mapRef.current) return;
 
-    const [minLon, minLat, maxLon, maxLat] = aoiBbox;
+    const [minLon, minLat, maxLon, maxLat] = safeBbox;
     const centerLat = (minLat + maxLat) / 2;
     const centerLon = (minLon + maxLon) / 2;
+    const initialCenter: [number, number] = (isNaN(centerLat) || isNaN(centerLon))
+      ? [18.5204, 73.8567]
+      : [centerLat, centerLon];
 
     const map = L.map(mapContainerRef.current, {
-      center: [centerLat, centerLon],
+      center: initialCenter,
       zoom: 12,
       zoomControl: false,
       attributionControl: false
@@ -315,6 +456,14 @@ export const SatelliteInvestigationMap: React.FC<SatelliteInvestigationMapProps>
       .addTo(map);
 
     mapRef.current = map;
+
+    // Synchronize Leaflet camera state with Google Maps context view
+    map.on('move', () => {
+      const c = map.getCenter();
+      const z = map.getZoom();
+      setSyncedCenter({ lat: c.lat, lng: c.lng });
+      setSyncedZoom(z);
+    });
 
     // Click on map background to collapse expanded clusters
     map.on('click', () => {
@@ -356,6 +505,16 @@ export const SatelliteInvestigationMap: React.FC<SatelliteInvestigationMapProps>
     applyPaneClips(sliderPosition);
   }, [sliderPosition, applyPaneClips]);
 
+  // Trigger Leaflet map invalidateSize when switching view modes
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      if (mapRef.current) {
+        mapRef.current.invalidateSize();
+      }
+    }, 150);
+    return () => clearTimeout(timer);
+  }, [investigationViewMode]);
+
   // Apply Map Color Changing Mode (Optical RGB, C-Band SAR, False Colour NIR)
   useEffect(() => {
     const filterStyle = getMapColorFilterStyle(mapColorMode);
@@ -396,7 +555,7 @@ export const SatelliteInvestigationMap: React.FC<SatelliteInvestigationMapProps>
       aoiRectRef.current = null;
     }
 
-    const [minLon, minLat, maxLon, maxLat] = aoiBbox;
+    const [minLon, minLat, maxLon, maxLat] = safeBbox;
     const aoiBounds = L.latLngBounds([minLat, minLon], [maxLat, maxLon]);
 
     if (showAoiBoundary) {
@@ -475,8 +634,8 @@ export const SatelliteInvestigationMap: React.FC<SatelliteInvestigationMapProps>
       }
     }
 
-    map.fitBounds(aoiBounds.pad(0.1), { duration: 0.6 });
-  }, [beforeScene, afterScene, aoiBbox, showAoiBoundary]);
+    safeFitBounds(map, aoiBounds.pad(0.1));
+  }, [beforeScene, afterScene, safeBbox, showAoiBoundary]);
 
   // Load Built-Up Change Mask Overlay
   useEffect(() => {
@@ -493,7 +652,7 @@ export const SatelliteInvestigationMap: React.FC<SatelliteInvestigationMapProps>
     const maskUrl = analysis.change_mask_url || (builtUpAnalysis ? `/api/change/built-up-mask/${builtUpAnalysis.analysis_id}` : null);
     if (!maskUrl) return;
 
-    const [minLon, minLat, maxLon, maxLat] = aoiBbox;
+    const [minLon, minLat, maxLon, maxLat] = safeBbox;
     const aoiBounds = L.latLngBounds([minLat, minLon], [maxLat, maxLon]);
 
     const maskOverlay = L.imageOverlay(maskUrl, aoiBounds, {
@@ -502,7 +661,7 @@ export const SatelliteInvestigationMap: React.FC<SatelliteInvestigationMapProps>
     }).addTo(map);
 
     maskOverlayRef.current = maskOverlay;
-  }, [showChangeOverlay, analysis, builtUpAnalysis, aoiBbox]);
+  }, [showChangeOverlay, analysis, builtUpAnalysis, safeBbox]);
 
   // Render Interactive Candidate Vectors (Section 7)
   useEffect(() => {
@@ -743,13 +902,13 @@ export const SatelliteInvestigationMap: React.FC<SatelliteInvestigationMapProps>
     }
 
     if (targetBounds && targetBounds.isValid()) {
-      map.flyToBounds(targetBounds.pad(0.6), {
-        duration: 1.0,
+      safeFlyToBounds(map, targetBounds.pad(0.6), {
+        duration: 0.8,
         maxZoom: 18
       });
-    } else if (selectedCandidate.centroid) {
-      map.flyTo([selectedCandidate.centroid[1], selectedCandidate.centroid[0]], 17, {
-        duration: 1.0
+    } else if (selectedCandidate.centroid && typeof selectedCandidate.centroid[0] === 'number' && typeof selectedCandidate.centroid[1] === 'number' && !isNaN(selectedCandidate.centroid[0]) && !isNaN(selectedCandidate.centroid[1])) {
+      safeFlyTo(map, [selectedCandidate.centroid[1], selectedCandidate.centroid[0]], 17, {
+        duration: 0.8
       });
     }
   }, [selectedCandidate]);
@@ -803,15 +962,19 @@ export const SatelliteInvestigationMap: React.FC<SatelliteInvestigationMapProps>
   const handleFitAoi = () => {
     const map = mapRef.current;
     if (!map) return;
-    const [minLon, minLat, maxLon, maxLat] = aoiBbox;
-    map.flyToBounds([[minLat, minLon], [maxLat, maxLon]], { padding: [30, 30], duration: 0.8 });
+    const [minLon, minLat, maxLon, maxLat] = safeBbox;
+    safeFlyToBounds(map, [[minLat, minLon], [maxLat, maxLon]], { padding: [30, 30], duration: 0.8 });
   };
 
   const handleFitCandidate = () => {
     const map = mapRef.current;
     if (!map || !selectedCandidate) return;
-    const [cMinLon, cMinLat, cMaxLon, cMaxLat] = selectedCandidate.bounding_box;
-    map.flyToBounds([[cMinLat, cMinLon], [cMaxLat, cMaxLon]], { padding: [50, 50], maxZoom: 14, duration: 0.8 });
+    if (selectedCandidate.bounding_box && selectedCandidate.bounding_box.every(n => typeof n === 'number' && !isNaN(n))) {
+      const [cMinLon, cMinLat, cMaxLon, cMaxLat] = selectedCandidate.bounding_box;
+      safeFlyToBounds(map, [[cMinLat, cMinLon], [cMaxLat, cMaxLon]], { padding: [50, 50], maxZoom: 16, duration: 0.8 });
+    } else if (selectedCandidate.centroid && typeof selectedCandidate.centroid[0] === 'number' && typeof selectedCandidate.centroid[1] === 'number' && !isNaN(selectedCandidate.centroid[0]) && !isNaN(selectedCandidate.centroid[1])) {
+      safeFlyTo(map, [selectedCandidate.centroid[1], selectedCandidate.centroid[0]], 16, { duration: 0.8 });
+    }
   };
 
   const handleZoomIn = () => {
@@ -843,43 +1006,123 @@ export const SatelliteInvestigationMap: React.FC<SatelliteInvestigationMapProps>
       {/* Embedded SVG spectral color mode filters */}
       <MapColorFilters />
 
-      {/* 1. Underlying Leaflet Map Canvas with isolated stacking context */}
-      <div 
-        ref={sliderContainerRef}
-        className="w-full h-full relative cursor-grab active:cursor-grabbing"
-      >
-        <div ref={mapContainerRef} className="w-full h-full relative z-0 isolate" />
-
-        {/* 2. Draggable Vertical Swipe Divider Bar */}
-        <div
-          className="absolute top-0 bottom-0 z-[1040] pointer-events-none transition-transform"
-          style={{ left: `${sliderPosition}%`, transform: 'translateX(-50%)' }}
+      {/* Map Viewports Container */}
+      <div className="w-full h-full flex flex-col md:flex-row relative">
+        {/* 1. Underlying Leaflet Map Canvas with isolated stacking context */}
+        <div 
+          ref={sliderContainerRef}
+          className={`h-full relative cursor-grab active:cursor-grabbing transition-all ${
+            investigationViewMode === 'analytical' 
+              ? 'w-full' 
+              : investigationViewMode === 'dual' 
+              ? 'w-full md:w-1/2' 
+              : 'hidden'
+          }`}
         >
-          <div className="w-[1.5px] h-full bg-white shadow-[0_0_6px_rgba(0,0,0,0.6)] mx-auto" />
+          <div ref={mapContainerRef} className="w-full h-full relative z-0 isolate" />
+
+          {/* 2. Draggable Vertical Swipe Divider Bar */}
           <div
-            onMouseDown={handleMouseDown}
-            onTouchStart={handleTouchStart}
-            className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 pointer-events-auto cursor-ew-resize w-8 h-8 rounded-full bg-white border border-slate-400 shadow-md flex items-center justify-center text-slate-800 hover:scale-105 active:scale-95 transition-transform"
-            title="Drag horizontally to compare Before & After scenes"
+            className="absolute top-0 bottom-0 z-[1040] pointer-events-none transition-transform"
+            style={{ left: `${sliderPosition}%`, transform: 'translateX(-50%)' }}
           >
-            <Sliders className="w-3.5 h-3.5 text-teal-800 rotate-90" />
+            <div className="w-[1.5px] h-full bg-white shadow-[0_0_6px_rgba(0,0,0,0.6)] mx-auto" />
+            <div
+              onMouseDown={handleMouseDown}
+              onTouchStart={handleTouchStart}
+              className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 pointer-events-auto cursor-ew-resize w-8 h-8 rounded-full bg-white border border-slate-400 shadow-md flex items-center justify-center text-slate-800 hover:scale-105 active:scale-95 transition-transform"
+              title="Drag horizontally to compare Before & After scenes"
+            >
+              <Sliders className="w-3.5 h-3.5 text-teal-800 rotate-90" />
+            </div>
           </div>
         </div>
 
-        {/* 3. FLOATING MAP INSTRUMENT DOCK (Section 6) */}
-        <div className="absolute top-3 left-3 z-[1050] flex flex-col gap-2 pointer-events-auto max-w-[calc(100%-80px)]">
-          {/* Map Color Changing Mode Selector Toolbar */}
-          <div className="flex items-center gap-2 flex-wrap">
-            <MapColorModeSelector
-              currentMode={mapColorMode}
-              onModeChange={setMapColorMode}
+        {/* 2b. Synchronized Google Maps Geographic Context View */}
+        {(investigationViewMode === 'dual' || investigationViewMode === 'google_context') && (
+          <div className={`h-full relative z-0 ${
+            investigationViewMode === 'dual' 
+              ? 'w-full md:w-1/2 border-t md:border-t-0 md:border-l border-slate-700' 
+              : 'w-full'
+          }`}>
+            <GoogleMapsContextView
+              center={syncedCenter}
+              zoom={syncedZoom}
+              aoiBbox={safeBbox}
+              selectedCandidateCentroid={selectedCandidate?.centroid || null}
+              selectedCandidateLabel={selectedCandidate?.display_name || selectedCandidate?.id}
+              onViewportChange={(c, z) => {
+                if (mapRef.current && !isNaN(c.lat) && !isNaN(c.lng)) {
+                  const curr = mapRef.current.getCenter();
+                  if (curr && !isNaN(curr.lat) && !isNaN(curr.lng)) {
+                    if (Math.abs(curr.lat - c.lat) > 0.001 || Math.abs(curr.lng - c.lng) > 0.001) {
+                      mapRef.current.panTo([c.lat, c.lng]);
+                    }
+                  }
+                }
+              }}
             />
           </div>
+        )}
+      </div>
 
-          {/* Mode & Layer Dock */}
-          <div className="bg-white/95 backdrop-blur-md border border-slate-200/90 rounded-md p-1.5 shadow-lg flex items-center space-x-1.5 text-xs flex-wrap">
-            {/* View Split Presets: Before / Split / After buttons */}
-            <div className="flex items-center bg-slate-100 rounded p-0.5 text-xs font-medium border border-slate-200 shadow-xs">
+      {/* 3. FLOATING MAP INSTRUMENT DOCK (Section 6) */}
+      <div className="absolute top-3 left-3 z-[1050] flex flex-col gap-2 pointer-events-auto max-w-[calc(100%-80px)]">
+        {/* Map Color Changing Mode Selector Toolbar */}
+        <div className="flex items-center gap-2 flex-wrap">
+          <MapColorModeSelector
+            currentMode={mapColorMode}
+            onModeChange={setMapColorMode}
+          />
+        </div>
+
+        {/* Mode & Layer Dock */}
+        <div className="bg-white/95 backdrop-blur-md border border-slate-200/90 rounded-md p-1.5 shadow-lg flex items-center space-x-1.5 text-xs flex-wrap">
+          {/* Geographic Context View Provider Mode Toggle */}
+          <div className="flex items-center bg-slate-100 rounded p-0.5 text-xs font-medium border border-slate-200 shadow-xs">
+            <button
+              type="button"
+              onClick={() => setInvestigationViewMode('analytical')}
+              className={`px-2 py-0.5 rounded transition-all font-mono text-[11px] ${
+                investigationViewMode === 'analytical'
+                  ? 'bg-teal-800 text-white font-bold shadow-xs'
+                  : 'text-slate-700 hover:text-slate-900 font-semibold'
+              }`}
+              title="Sentinel-2 Analytical Investigation View"
+            >
+              Analytical (S2)
+            </button>
+            <button
+              type="button"
+              onClick={() => setInvestigationViewMode('dual')}
+              className={`px-2 py-0.5 rounded transition-all font-mono text-[11px] flex items-center gap-1 ${
+                investigationViewMode === 'dual'
+                  ? 'bg-teal-800 text-white font-bold shadow-xs'
+                  : 'text-slate-700 hover:text-slate-900 font-semibold'
+              }`}
+              title="Synchronized Dual View (S2 Analysis + Google Maps Context)"
+            >
+              <MapPin className="w-3 h-3 text-amber-600" />
+              <span>Dual Sync</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setInvestigationViewMode('google_context')}
+              className={`px-2 py-0.5 rounded transition-all font-mono text-[11px] ${
+                investigationViewMode === 'google_context'
+                  ? 'bg-teal-800 text-white font-bold shadow-xs'
+                  : 'text-slate-700 hover:text-slate-900 font-semibold'
+              }`}
+              title="Full Google Maps Geographic Reference Layer"
+            >
+              Google Maps
+            </button>
+          </div>
+
+          <div className="w-px h-5 bg-slate-300 mx-0.5" />
+
+          {/* View Split Presets: Before / Split / After buttons */}
+          <div className="flex items-center bg-slate-100 rounded p-0.5 text-xs font-medium border border-slate-200 shadow-xs">
               <button
                 type="button"
                 onClick={() => setSliderPosition(100)}
@@ -1124,7 +1367,6 @@ export const SatelliteInvestigationMap: React.FC<SatelliteInvestigationMapProps>
             Split: {sliderPosition.toFixed(0)}% / {(100 - sliderPosition).toFixed(0)}%
           </button>
         </div>
-      </div>
     </div>
   );
 };

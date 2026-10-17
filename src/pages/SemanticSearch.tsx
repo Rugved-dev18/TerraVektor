@@ -28,7 +28,11 @@ import { QueryClarification } from '../features/semantic-search/components/Query
 import { parseQuery, parseQueryAsync, type QueryPlan } from '../features/semantic-search/parser';
 import { format } from 'date-fns';
 
-export const SemanticSearch: React.FC = () => {
+interface SemanticSearchProps {
+  onNavigateToEvidenceStudio?: () => void;
+}
+
+export const SemanticSearch: React.FC<SemanticSearchProps> = ({ onNavigateToEvidenceStudio }) => {
   const [query, setQuery] = useState('Show new construction around Nashik between May 2024 and May 2026');
   const [isLoading, setIsLoading] = useState(false);
   const [hasSearched, setHasSearched] = useState(false);
@@ -557,6 +561,7 @@ export const SemanticSearch: React.FC = () => {
               } : null}
               onSelectCandidate={(id) => setSelectedCandidateId(id)}
               onClose={() => setSelectedCandidateId(null)}
+              onOpenEvidenceStudio={onNavigateToEvidenceStudio}
               dataMode={currentAnalysis?.data_mode}
               limitations={(currentAnalysis as any)?.limitations}
               source={currentAnalysis?.source}

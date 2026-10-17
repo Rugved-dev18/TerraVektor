@@ -10,7 +10,8 @@ import {
   ImageIcon,
   Settings,
   ShieldCheck,
-  AlertCircle
+  AlertCircle,
+  Sparkles
 } from 'lucide-react';
 import { HealthResponse } from '../types';
 
@@ -59,6 +60,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
       title: 'ANALYSIS',
       items: [
         { id: 'change-analysis', label: 'Change Analysis', icon: Activity },
+        { id: 'evidence-studio', label: 'Evidence Studio', icon: Sparkles, badge: 'New' },
         { id: 'review-queue', label: 'Review Queue', icon: ClipboardCheck },
         { id: 'image-search', label: 'Visual Search', icon: ImageIcon },
       ]

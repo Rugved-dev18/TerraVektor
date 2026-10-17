@@ -10,10 +10,11 @@ import ReviewQueue from '../pages/ReviewQueue';
 import DataManagement from '../pages/DataManagement';
 import SystemStatus from '../pages/SystemStatus';
 import Sentinel2Search from '../pages/Sentinel2Search';
+import EvidenceStudio from '../pages/EvidenceStudio';
 import { getHealth, isExplicitDemoModeActive, setExplicitDemoMode } from '../services/api';
 import { HealthResponse } from '../types';
 
-type PageType = 'dashboard' | 'sentinel2-search' | 'semantic-search' | 'image-search' | 'change-analysis' | 'similar-locations' | 'review-queue' | 'data' | 'status';
+type PageType = 'dashboard' | 'sentinel2-search' | 'semantic-search' | 'image-search' | 'change-analysis' | 'evidence-studio' | 'similar-locations' | 'review-queue' | 'data' | 'status';
 
 function App() {
   const [currentPage, setCurrentPage] = useState<PageType>('semantic-search');
@@ -50,11 +51,13 @@ function App() {
       case 'sentinel2-search':
         return <Sentinel2Search />;
       case 'semantic-search':
-        return <SemanticSearch />;
+        return <SemanticSearch onNavigateToEvidenceStudio={() => setCurrentPage('evidence-studio')} />;
       case 'image-search':
         return <ImageSearch />;
       case 'change-analysis':
-        return <ChangeAnalysis />;
+        return <ChangeAnalysis onOpenEvidenceStudio={() => setCurrentPage('evidence-studio')} />;
+      case 'evidence-studio':
+        return <EvidenceStudio />;
       case 'similar-locations':
         return <SimilarLocations />;
       case 'review-queue':

@@ -3,10 +3,11 @@ import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import { Sentinel2Product } from '../../../types';
 import { format } from 'date-fns';
-import { Layers, Maximize2, Trash2, Crosshair, ExternalLink, Calendar, Cloud, Info } from 'lucide-react';
+import { Layers, Maximize2, Trash2, Crosshair, ExternalLink, Calendar, Cloud, Info, MapPin } from 'lucide-react';
 import { MapColorMode } from '../../../types/mapModes';
 import { MapColorFilters, getMapColorFilterStyle } from '../../../components/MapColorFilters';
 import { MapColorModeSelector } from '../../../components/MapColorModeSelector';
+import { GoogleMapsContextView } from '../../investigation/components/GoogleMapsContextView';
 
 interface LeafletMapViewProps {
   aoiBbox: [number, number, number, number] | null; // [minLon, minLat, maxLon, maxLat]
@@ -40,6 +41,11 @@ export const LeafletMapView: React.FC<LeafletMapViewProps> = ({
   const [mapColorMode, setMapColorMode] = useState<MapColorMode>('optical-rgb');
   const [activeBaseLayer, setActiveBaseLayer] = useState<'osm' | 'satellite'>('osm');
   const baseLayersRef = useRef<{ osm: L.TileLayer; satellite: L.TileLayer } | null>(null);
+
+  // Geographic Context Layer
+  const [viewProvider, setViewProvider] = useState<'leaflet' | 'google_context'>('leaflet');
+  const [syncedCenter, setSyncedCenter] = useState<{ lat: number; lng: number }>({ lat: center[0], lng: center[1] });
+  const [syncedZoom, setSyncedZoom] = useState<number>(zoom);
 
   // Initialize Map
   useEffect(() => {
@@ -78,6 +84,13 @@ export const LeafletMapView: React.FC<LeafletMapViewProps> = ({
     const footprintsGroup = L.layerGroup().addTo(map);
     footprintsLayerGroupRef.current = footprintsGroup;
 
+    map.on('move', () => {
+      const c = map.getCenter();
+      const z = map.getZoom();
+      setSyncedCenter({ lat: c.lat, lng: c.lng });
+      setSyncedZoom(z);
+    });
+
     mapRef.current = map;
 
     return () => {
@@ -85,6 +98,13 @@ export const LeafletMapView: React.FC<LeafletMapViewProps> = ({
       mapRef.current = null;
     };
   }, []);
+
+  useEffect(() => {
+    const t = setTimeout(() => {
+      mapRef.current?.invalidateSize();
+    }, 150);
+    return () => clearTimeout(t);
+  }, [viewProvider]);
 
   // Switch Basemap
   const handleToggleBaseLayer = () => {
@@ -354,13 +374,23 @@ export const LeafletMapView: React.FC<LeafletMapViewProps> = ({
     if (!map || !selectedProductId || !products) return;
 
     const selectedProd = products.find((p) => p.id === selectedProductId);
-    if (selectedProd && selectedProd.bbox) {
+    if (selectedProd && selectedProd.bbox && selectedProd.bbox.every(n => typeof n === 'number' && !isNaN(n))) {
       const [minLon, minLat, maxLon, maxLat] = selectedProd.bbox;
-      map.flyToBounds([[minLat, minLon], [maxLat, maxLon]], {
-        padding: [30, 30],
-        maxZoom: 11,
-        duration: 1.2
-      });
+      try {
+        map.invalidateSize();
+        const size = map.getSize();
+        if (!size || size.x <= 10 || size.y <= 10) {
+          map.setView([(minLat + maxLat) / 2, (minLon + maxLon) / 2], 10, { animate: false });
+        } else {
+          map.flyToBounds([[minLat, minLon], [maxLat, maxLon]], {
+            padding: [30, 30],
+            maxZoom: 11,
+            duration: 1.0
+          });
+        }
+      } catch (err) {
+        console.warn('LeafletMapView flyToBounds fallback:', err);
+      }
     }
   }, [selectedProductId, products]);
 
@@ -369,15 +399,34 @@ export const LeafletMapView: React.FC<LeafletMapViewProps> = ({
     const map = mapRef.current;
     if (!map) return;
 
-    if (aoiBbox) {
-      const [minLon, minLat, maxLon, maxLat] = aoiBbox;
-      map.flyToBounds([[minLat, minLon], [maxLat, maxLon]], { padding: [40, 40], duration: 1 });
-    } else if (products && products.length > 0) {
-      const lGroup = footprintsLayerGroupRef.current;
-      if (lGroup && lGroup.getLayers().length > 0) {
-        const featGroup = L.featureGroup(lGroup.getLayers());
-        map.flyToBounds(featGroup.getBounds().pad(0.1), { padding: [30, 30], duration: 1 });
+    try {
+      map.invalidateSize();
+      const size = map.getSize();
+      const isMapReady = size && size.x > 10 && size.y > 10;
+
+      if (aoiBbox && aoiBbox.every(n => typeof n === 'number' && !isNaN(n))) {
+        const [minLon, minLat, maxLon, maxLat] = aoiBbox;
+        if (isMapReady) {
+          map.flyToBounds([[minLat, minLon], [maxLat, maxLon]], { padding: [40, 40], duration: 0.8 });
+        } else {
+          map.setView([(minLat + maxLat) / 2, (minLon + maxLon) / 2], 8, { animate: false });
+        }
+      } else if (products && products.length > 0) {
+        const lGroup = footprintsLayerGroupRef.current;
+        if (lGroup && lGroup.getLayers().length > 0) {
+          const featGroup = L.featureGroup(lGroup.getLayers());
+          const bounds = featGroup.getBounds();
+          if (bounds.isValid()) {
+            if (isMapReady) {
+              map.flyToBounds(bounds.pad(0.1), { padding: [30, 30], duration: 0.8 });
+            } else {
+              map.setView(bounds.getCenter(), 8, { animate: false });
+            }
+          }
+        }
       }
+    } catch (err) {
+      console.warn('handleFitToExtent error:', err);
     }
   }, [aoiBbox, products]);
 
@@ -386,7 +435,30 @@ export const LeafletMapView: React.FC<LeafletMapViewProps> = ({
       {/* Embedded SVG spectral color mode filters */}
       <MapColorFilters />
 
-      <div ref={mapContainerRef} className="w-full h-full min-h-[460px] bg-slate-100 relative z-0 isolate" />
+      <div 
+        ref={mapContainerRef} 
+        className={`w-full h-full min-h-[460px] bg-slate-100 relative z-0 isolate ${
+          viewProvider === 'google_context' ? 'hidden' : 'block'
+        }`} 
+      />
+
+      {viewProvider === 'google_context' && (
+        <div className="w-full h-full min-h-[460px] relative z-0">
+          <GoogleMapsContextView
+            center={syncedCenter}
+            zoom={syncedZoom}
+            aoiBbox={aoiBbox}
+            onViewportChange={(c, z) => {
+              if (mapRef.current) {
+                const curr = mapRef.current.getCenter();
+                if (Math.abs(curr.lat - c.lat) > 0.001 || Math.abs(curr.lng - c.lng) > 0.001) {
+                  mapRef.current.panTo([c.lat, c.lng]);
+                }
+              }
+            }}
+          />
+        </div>
+      )}
 
       {/* Floating Map Controls Toolbar */}
       <div className="absolute top-4 left-4 z-[1000] flex flex-col space-y-2">
@@ -419,6 +491,21 @@ export const LeafletMapView: React.FC<LeafletMapViewProps> = ({
 
       {/* Map Tools Top Right */}
       <div className="absolute top-4 right-14 z-[1000] flex items-center space-x-2">
+        {/* Geographic Context Layer Switcher */}
+        <button
+          type="button"
+          onClick={() => setViewProvider(viewProvider === 'leaflet' ? 'google_context' : 'leaflet')}
+          className={`flex items-center space-x-1.5 px-2.5 py-1.5 rounded text-xs font-semibold border shadow-xs transition-colors ${
+            viewProvider === 'google_context'
+              ? 'bg-teal-800 text-white border-teal-900'
+              : 'bg-white hover:bg-slate-50 text-slate-700 border-slate-300'
+          }`}
+          title="Toggle Google Maps Geographic Context Layer"
+        >
+          <MapPin className="w-3.5 h-3.5 text-amber-500" />
+          <span>{viewProvider === 'google_context' ? 'Leaflet View' : 'Google Maps'}</span>
+        </button>
+
         {/* Map Color Changing Mode Selector */}
         <MapColorModeSelector
           currentMode={mapColorMode}

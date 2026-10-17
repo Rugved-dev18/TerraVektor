@@ -2,12 +2,15 @@ import { jsPDF } from 'jspdf';
 import { format } from 'date-fns';
 import { ChangeAnalysisResult, Sentinel2Product } from '../types';
 
+import { EvidenceAnnotation } from './exportEvidenceImage';
+
 export interface ExportPdfOptions {
   analysis: ChangeAnalysisResult;
   beforeProduct?: Sentinel2Product | null;
   afterProduct?: Sentinel2Product | null;
   aoiBbox?: [number, number, number, number] | null;
   locationName?: string;
+  annotations?: EvidenceAnnotation[];
 }
 
 export function exportAnalysisPdf({
@@ -15,7 +18,8 @@ export function exportAnalysisPdf({
   beforeProduct,
   afterProduct,
   aoiBbox,
-  locationName = 'Selected AOI'
+  locationName = 'Selected AOI',
+  annotations = []
 }: ExportPdfOptions): void {
   const doc = new jsPDF({
     orientation: 'portrait',
@@ -333,7 +337,99 @@ export function exportAnalysisPdf({
   doc.setFontSize(7);
   doc.setTextColor(148, 163, 184);
   doc.text('TerraVektor Geospatial Engine • Copernicus Sentinel-2 MSI Level-2A Scientific Pipeline', margin, footerY);
-  doc.text('Page 1 of 1', pageWidth - margin, footerY, { align: 'right' });
+  doc.text(annotations.length > 0 ? 'Page 1 of 2' : 'Page 1 of 1', pageWidth - margin, footerY, { align: 'right' });
+
+  // Optional Page 2: Investigator Annotations & Presentation Dossier
+  if (annotations.length > 0) {
+    doc.addPage();
+
+    // Page 2 Header Banner
+    doc.setFillColor(15, 41, 46);
+    doc.rect(0, 0, pageWidth, 24, 'F');
+    doc.setFillColor(13, 148, 136);
+    doc.rect(0, 24, pageWidth, 1.5, 'F');
+
+    doc.setTextColor(255, 255, 255);
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(14);
+    doc.text('TERRAVEKTOR • EVIDENCE VISUALIZATION DOSSIER', margin, 12);
+
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(8);
+    doc.setTextColor(153, 246, 228);
+    doc.text('RECORDED INVESTIGATOR ANNOTATIONS & PRESENTATION EVIDENCE', margin, 18);
+
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(7.5);
+    doc.setTextColor(204, 251, 241);
+    doc.text(`Analysis: ${analysis.analysis_id.slice(0, 24)}`, pageWidth - margin, 15, { align: 'right' });
+
+    let p2Y = 32;
+
+    doc.setTextColor(15, 23, 42);
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(11);
+    doc.text('6. HUMAN INVESTIGATOR ANNOTATIONS & GROUND HYPOTHESES', margin, p2Y);
+    p2Y += 5;
+
+    // Disclaimer Box
+    doc.setFillColor(254, 243, 199); // Amber-100
+    doc.setDrawColor(251, 191, 36); // Amber-400
+    doc.roundedRect(margin, p2Y, contentWidth, 14, 1.5, 1.5, 'FD');
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(7.5);
+    doc.setTextColor(146, 64, 14); // Amber-800
+    doc.text('NOTICE: The items below represent human investigator presentation annotations.', margin + 4, p2Y + 5);
+    doc.setFont('helvetica', 'normal');
+    doc.setTextColor(180, 83, 9);
+    doc.text('These annotations are stored on a separate presentation layer and do not modify analytical pixels or machine detection thresholds.', margin + 4, p2Y + 10);
+
+    p2Y += 18;
+
+    // Annotation Cards
+    annotations.forEach((ann, idx) => {
+      if (p2Y > 250) return; // Guard against overflowing page height
+
+      doc.setFillColor(248, 250, 252);
+      doc.setDrawColor(203, 213, 225);
+      doc.roundedRect(margin, p2Y, contentWidth, 26, 1.5, 1.5, 'FD');
+
+      // Left accent bar
+      doc.setFillColor(234, 88, 12); // Orange-600
+      doc.rect(margin, p2Y, 2, 26, 'F');
+
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(8.5);
+      doc.setTextColor(15, 23, 42);
+      doc.text(`[ANN-${idx + 1}] ${ann.label} (${ann.category})`, margin + 5, p2Y + 6);
+
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(7.5);
+      doc.setTextColor(71, 85, 105);
+      doc.text(`Centroid: ${ann.lat.toFixed(5)}°N, ${ann.lon.toFixed(5)}°E   •   Added: ${ann.createdAt}`, margin + 5, p2Y + 11);
+
+      if (ann.candidateMetrics?.areaM2) {
+        doc.text(`Attached Candidate: Area ${ann.candidateMetrics.areaM2.toLocaleString()} m²  •  Persistence: ${ann.candidateMetrics.persistence || 'Unspecified'}  •  ΔNDVI: ${ann.candidateMetrics.deltaNdvi?.toFixed(3) || 'N/A'}`, margin + 5, p2Y + 16);
+      } else {
+        doc.text(`Type: Point of Interest / Spatial Annotation`, margin + 5, p2Y + 16);
+      }
+
+      doc.setFont('helvetica', 'bold');
+      doc.setTextColor(30, 41, 59);
+      doc.text(`Investigator Notes: "${ann.notes}"`, margin + 5, p2Y + 22);
+
+      p2Y += 30;
+    });
+
+    // Page 2 Footer
+    doc.setDrawColor(203, 213, 225);
+    doc.line(margin, footerY - 4, pageWidth - margin, footerY - 4);
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(7);
+    doc.setTextColor(148, 163, 184);
+    doc.text('TerraVektor Geospatial Engine • Human Analyst Presentation Dossier', margin, footerY);
+    doc.text('Page 2 of 2', pageWidth - margin, footerY, { align: 'right' });
+  }
 
   // Generate file name & trigger client download
   const cleanLoc = locationName.toLowerCase().replace(/[^a-z0-9]/g, '_').slice(0, 16);
