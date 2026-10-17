@@ -33,7 +33,7 @@ interface SemanticSearchProps {
 }
 
 export const SemanticSearch: React.FC<SemanticSearchProps> = ({ onNavigateToEvidenceStudio }) => {
-  const [query, setQuery] = useState('Show new construction around Nashik between May 2024 and May 2026');
+  const [query, setQuery] = useState('Show New construction around Mumbai between May 2024 and March 2025');
   const [isLoading, setIsLoading] = useState(false);
   const [hasSearched, setHasSearched] = useState(false);
   const [result, setResult] = useState<SemanticRetrievalResponse | null>(null);
@@ -46,7 +46,7 @@ export const SemanticSearch: React.FC<SemanticSearchProps> = ({ onNavigateToEvid
   const [queryPlan, setQueryPlan] = useState<QueryPlan | null>(null);
 
   const sampleQueries = [
-    { label: 'Nashik Construction', text: 'Show new construction around Nashik between May 2024 and May 2026' },
+    { label: 'Mumbai Construction', text: 'Show New construction around Mumbai between May 2024 and March 2025' },
     { label: 'Nagpur Vegetation', text: 'Find vegetation loss near Nagpur from January 2024 to January 2026' },
     { label: 'Kolhapur Growth', text: 'Show urban expansion around Kolhapur between March 2024 and March 2026' },
     { label: 'Pune Urban Growth', text: 'Find new construction and built-up expansion around Pune between May 2024 and October 2024' },
@@ -278,7 +278,7 @@ export const SemanticSearch: React.FC<SemanticSearchProps> = ({ onNavigateToEvid
               type="text"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder="e.g. 'Show new construction around Nashik between May 2024 and May 2026'"
+              placeholder="Show New construction around Mumbai between May 2024 and March 2025"
               className="w-full bg-white border border-slate-300 rounded pl-9 pr-3 py-1.5 text-xs text-slate-900 placeholder-slate-400 focus:outline-hidden focus:border-teal-700 transition-colors"
             />
           </div>
