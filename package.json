@@ -7,7 +7,7 @@
     "dev": "tsx server.ts",
     "build": "tsc && vite build && tsc --project tsconfig.server.json",
     "lint": "tsc --noEmit && tsc --project tsconfig.server.json --noEmit",
-    "start": "node server.ts",
+    "start": "tsx server.ts",
     "preview": "vite preview"
   },
   "dependencies": {
